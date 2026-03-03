@@ -825,13 +825,14 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
     """
     # pagination_class = None
     queryset = TotalInvoice.objects.select_related(
-        'secondary_order', 'patient', 'user'
+        'secondary_order','ternary_order', 'patient', 'user'
     ).prefetch_related('payments')
     serializer_class = TotalInvoiceSerializer
     search_fields = ['invoice_number', 'patient__first_name', 'patient__last_name', 'status']
     filterset_fields = {
         'patient': ['exact'],
         'secondary_order__primary_order__booking_type': ['exact'],
+        'ternary_order__booking_type': ['exact'],
         'status': ['exact'],
     }
 

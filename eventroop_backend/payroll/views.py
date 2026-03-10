@@ -200,8 +200,9 @@ class SalaryTransactionViewSet(viewsets.ModelViewSet):
         )
 
         # Permission Check: Only Owner or Admin can create transactions for their staff
-        if (not user.is_superuser) or (not user.is_owner) or (salary_report.user.hierarchy.owner != user):
-                 return Response(
+        if not user.is_superuser:
+            if not user.is_owner or salary_report.user.hierarchy.owner != user:
+                return Response(
                     {"detail": "You do not have permission to record payments for this report."},
                     status=status.HTTP_403_FORBIDDEN
                 )

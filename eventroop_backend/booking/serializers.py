@@ -143,6 +143,7 @@ class TernaryOrderCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = TernaryOrder
         fields = [
+            'venue',
             'service',
             'package',
             'start_datetime',
@@ -151,6 +152,7 @@ class TernaryOrderCreateSerializer(serializers.ModelSerializer):
             'premium_amount',
         ]
         extra_kwargs = {
+            'venue': {'required': True},
             'service': {'required': True},
             'package': {'required': True},
         }
@@ -190,6 +192,11 @@ class TernaryOrderCreateSerializer(serializers.ModelSerializer):
 class TernaryOrderSerializer(serializers.ModelSerializer):
     """Read serializer for a single TernaryOrder (service line item)."""
 
+    venue_name = serializers.CharField(
+        source='venue.name',
+        read_only=True,
+        allow_null=True,
+    )
     service_name = serializers.CharField(
         source='service.name',
         read_only=True,
@@ -197,6 +204,11 @@ class TernaryOrderSerializer(serializers.ModelSerializer):
     )
     package_name = serializers.CharField(
         source='package.name',
+        read_only=True,
+        allow_null=True,
+    )
+    location_locality = serializers.CharField(
+        source='venue.location.locality',
         read_only=True,
         allow_null=True,
     )
@@ -208,10 +220,13 @@ class TernaryOrderSerializer(serializers.ModelSerializer):
             'order_id',
             'booking_entity',
             'booking_type',
+            'venue',
+            'venue_name',
             'service',
             'service_name',
             'package',
             'package_name',
+            'location_locality',
             'start_datetime',
             'end_datetime',
             'discount_amount',
@@ -222,17 +237,33 @@ class TernaryOrderSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'order_id', 'subtotal', 'created_at', 'updated_at']
+         
 
 class SecondaryOrderSerializer(serializers.ModelSerializer):
     """Read serializer for a SecondaryOrder (one period/month slot)."""
 
     ternary_orders = TernaryOrderSerializer(many=True, read_only=True)
+    service_name = serializers.CharField(
+        source='primary_order.service.name',
+        read_only=True,
+        allow_null=True,
+    )
+    package_name = serializers.CharField(
+        source='primary_order.package.name',
+        read_only=True,
+        allow_null=True,
+    )
+    location_locality = serializers.SerializerMethodField()
+
 
     class Meta:
         model = SecondaryOrder
         fields = [
             'id',
             'order_id',
+            'service_name',
+            'package_name',
+            'location_locality',
             'start_datetime',
             'end_datetime',
             'subtotal',
@@ -241,8 +272,14 @@ class SecondaryOrderSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'order_id', 'subtotal', 'created_at', 'updated_at']
-
+        read_only_fields = ['id','service_name','package_name','location_locality', 'order_id', 'subtotal', 'created_at', 'updated_at']
+    
+    def get_location_locality(self, obj):
+        primary_order = obj.primary_order
+        if primary_order.venue:
+            return primary_order.venue.location.locality
+        return None
+    
 class PrimaryOrderSerializer(serializers.ModelSerializer):
     """
     Full read serializer for PrimaryOrder with nested SecondaryOrders

@@ -423,7 +423,62 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         response_serializer = PrimaryOrderSerializer(primary_order)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+    
+    # ── update ─────────────────────────────────────────────────────────────────
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+        """
+        Update PrimaryOrder and regenerate SecondaryOrders if schedule changes.
+        """
 
+        instance = self.get_object()
+
+        raw_dates = request.data.get("dates")
+
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        old_start = instance.start_datetime
+        old_end = instance.end_datetime
+        old_package = instance.package
+
+        # Handle date payload like create()
+        if raw_dates:
+            date_keys = list(raw_dates.keys()) if isinstance(raw_dates, dict) else raw_dates
+            parsed_dates = [date.fromisoformat(d) for d in date_keys]
+
+            serializer.validated_data["start_datetime"] = timezone.make_aware(
+                datetime.combine(min(parsed_dates), time.min)
+            )
+            serializer.validated_data["end_datetime"] = timezone.make_aware(
+                datetime.combine(max(parsed_dates), time.max)
+            )
+
+        primary_order = serializer.save()
+
+        # Determine if schedule changed
+        schedule_changed = (
+            old_start != primary_order.start_datetime
+            or old_end != primary_order.end_datetime
+            or old_package != primary_order.package
+            or raw_dates is not None
+        )
+
+        if schedule_changed:
+
+            # Delete old secondary orders
+            primary_order.secondary_orders.all().delete()
+
+            if raw_dates:
+                parsed = self.parse_dates(primary_order.package.period, raw_dates)
+                primary_order.generate_secondary_from_random_dates(parsed)
+            else:
+                primary_order.generate_secondary_full_range_dates()
+
+        response_serializer = PrimaryOrderSerializer(primary_order)
+
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
+    
     # ── Add service (TernaryOrder) ──────────────────────────────────────────────
     @action(detail=True, methods=['post'])
     @transaction.atomic
@@ -435,6 +490,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         Payload:
         {
+            "venue": 13,
             "service": 5,
             "package": 2,
             "start_datetime": "2026-02-05T10:00:00Z",

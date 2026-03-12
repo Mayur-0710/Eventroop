@@ -696,7 +696,7 @@ class SecondaryOrder(models.Model):
 # TernaryOrder
 class TernaryOrder(models.Model):
     """One record per service/booking line item within a SecondaryOrder."""
-
+    
     secondary_order = models.ForeignKey(
         SecondaryOrder,
         on_delete=models.CASCADE,
@@ -704,7 +704,12 @@ class TernaryOrder(models.Model):
         db_index=True,
     )
     order_id = models.CharField(max_length=50, blank=True)
-
+    venue = models.ForeignKey(
+        "venue_manager.Venue",
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        db_index=True,
+    )
     service = models.ForeignKey(
         "venue_manager.Service",
         null=True, blank=True,

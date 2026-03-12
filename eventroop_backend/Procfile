@@ -1,1 +1,1 @@
-web: gunicorn eventroop_backend.asgi
+uvicorn eventroop_backend.asgi:application

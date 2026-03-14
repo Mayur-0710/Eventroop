@@ -46,7 +46,7 @@ def auto_update_status(start_datetime,end_datetime):
     elif start_datetime <= now <= end_datetime:
         status = BookingStatus.IN_PROGRESS
     elif now > end_datetime:
-        status = BookingStatus.UNFULFILLED
+        status = BookingStatus.FULFILLED
     return status
 
 def generate_order_id(instance):

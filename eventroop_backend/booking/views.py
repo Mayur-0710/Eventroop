@@ -355,7 +355,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     # ── Serializer ─────────────────────────────────────────────────────────────
     def get_serializer_class(self):
-        if self.action == 'create':
+        if self.action in ('create','update'):
             return PrimaryOrderCreateSerializer
         return PrimaryOrderSerializer
 
@@ -456,13 +456,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         primary_order = serializer.save()
 
-        # Determine if schedule changed
-        schedule_changed = (
-            old_start != primary_order.start_datetime
-            or old_end != primary_order.end_datetime
-            or old_package != primary_order.package
-            or raw_dates is not None
-        )
+        schedule_changed =True
 
         if schedule_changed:
 
@@ -881,7 +875,6 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
     - Retrieving invoice details and payments
     - Manual recalculation endpoints
     """
-    # pagination_class = None
     queryset = TotalInvoice.objects.select_related(
         'secondary_order','ternary_order', 'patient', 'user'
     ).prefetch_related('payments')
@@ -943,80 +936,81 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
     
         return queryset
     
-    def list(self, request, *args, **kwargs):
-        """
-        Override list() to return grouped response by user and patient.
-        """
-        queryset = self.filter_queryset(self.get_queryset())
-        queryset = queryset.order_by('user_id', 'patient_id')
 
-        page = self.paginate_queryset(queryset)
-        queryset_to_process = page if page is not None else queryset
-        
+    def list(self, request, *args, **kwargs):
+
+        queryset = self.filter_queryset(self.get_queryset()).order_by('user_id', 'patient_id')
+
         grouped_data = []
 
         for (user_id, patient_id), invoices_group in groupby(
-            queryset_to_process,
+            queryset,
             key=lambda x: (x.user_id, x.patient_id)
         ):
+
             invoices_list = list(invoices_group)
-            
+
             if not invoices_list:
                 continue
-            
+
             first_invoice = invoices_list[0]
             user = first_invoice.user
             patient = first_invoice.patient
-            
+
             total_invoice_amount = sum(inv.total_amount for inv in invoices_list)
             total_paid = sum(inv.paid_amount for inv in invoices_list)
             total_balance = total_invoice_amount - total_paid
-            
+
             invoices_array = []
+
             for invoice in invoices_list:
+
                 payments = invoice.payments.all()
-                
+
                 payment_details = [
                     {
-                        'id': str(p.id),
-                        'payment_date': str(p.created_at),
-                        'amount': str(p.amount),
-                        'paid_date': str(p.paid_date),
-                        'method': p.method, 
-                        'is_verified': p.is_verified,
-                        'reference': p.reference or '-'
+                        "id": str(p.id),
+                        "payment_date": str(p.created_at),
+                        "amount": str(p.amount),
+                        "paid_date": str(p.paid_date),
+                        "method": p.method,
+                        "is_verified": p.is_verified,
+                        "reference": p.reference or "-"
                     }
                     for p in payments
                 ]
-                
+
                 invoices_array.append({
-                    'id': str(invoice.id),
-                    'invoice_date': str(invoice.issued_date),
-                    'invoice_number': invoice.invoice_number,
-                    'invoice_amount': str(invoice.total_amount),
-                    'period_start': str(invoice.period_start),
-                    'period_end': str(invoice.period_end),
-                    'paid': str(invoice.paid_amount),
-                    'balance': str(invoice.remaining_amount),
-                    'status': invoice.get_status_display(),
-                    'payment_details': payment_details
+                    "id": str(invoice.id),
+                    "invoice_date": str(invoice.issued_date),
+                    "invoice_number": invoice.invoice_number,
+                    "invoice_amount": str(invoice.total_amount),
+                    "period_start": str(invoice.period_start),
+                    "period_end": str(invoice.period_end),
+                    "paid": str(invoice.paid_amount),
+                    "balance": str(invoice.remaining_amount),
+                    "status": invoice.get_status_display(),
+                    "payment_details": payment_details
                 })
-            
+
             grouped_data.append({
-                'user_id': user.id,
-                'user_name': user.get_full_name(),
-                'patient_id': patient.id,
-                'patient_name': patient.get_full_name(),
-                'total_invoice_amount': str(total_invoice_amount),
-                'total_paid': str(total_paid),
-                'total_balance': str(total_balance),
-                'invoices': invoices_array
+                "user_id": user.id,
+                "user_name": user.get_full_name(),
+                "patient_id": patient.id,
+                "patient_name": patient.get_full_name(),
+                "total_invoice_amount": str(total_invoice_amount),
+                "total_paid": str(total_paid),
+                "total_balance": str(total_balance),
+                "invoices": invoices_array
             })
-        
+
+        page = self.paginate_queryset(grouped_data)
+
         if page is not None:
-            return self.get_paginated_response(grouped_data)
+            return self.get_paginated_response(page)
 
         return Response(grouped_data)
+
     @action(detail=True, methods=['get'])
     def recalculate(self, request, pk=None):
         """

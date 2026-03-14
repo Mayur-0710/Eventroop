@@ -635,7 +635,6 @@ class SecondaryOrder(models.Model):
 
         if not is_targeted_save and not skip_auto_status:
             self.status = auto_update_status(self.start_datetime, self.end_datetime)
-        print(f"------------------In Save----------------------")
 
         super().save(*args, **kwargs)
 
@@ -668,7 +667,6 @@ class SecondaryOrder(models.Model):
         Called automatically from save() when status changes to a trigger status.
         Can also be called manually if needed.
         """
-        print(f"----------------------------------------{self}")
         TotalInvoice.create_or_update_for_secondary(self)
 
     # ── Calculations ───────────────────────────────────────────────────────────

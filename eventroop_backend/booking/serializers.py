@@ -392,6 +392,7 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
             'venue',
             'service',
             'package',
+            'booking_type',
             'start_datetime',
             'end_datetime',
             'discount_amount',

@@ -986,6 +986,7 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(page)
         
         return Response(grouped_data)
+    
     @action(detail=True, methods=['get'])
     def recalculate(self, request, pk=None):
         """
@@ -1048,7 +1049,6 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
         serializer = self.serializer_class(overdue_invoices, many=True)
         return Response(serializer.data)
     
-
 class PaymentViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing payments.
@@ -1173,3 +1173,5 @@ class PaymentViewSet(viewsets.ModelViewSet):
         verified_payments = self.get_queryset().filter(is_verified=True)
         serializer = PaymentSerializer(verified_payments, many=True)
         return Response(serializer.data)
+    
+    

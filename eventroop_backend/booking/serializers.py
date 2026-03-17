@@ -517,7 +517,6 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
             'total_amount',
             'remaining_amount',
             'paid_amount',
-            'issued_date',
         ]
 
     def validate_discount_amount(self, value):

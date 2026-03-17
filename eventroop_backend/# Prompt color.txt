@@ -1,0 +1,6 @@
+# Prompt color
+function prompt {
+    Write-Host "PS " -NoNewline -ForegroundColor Green
+    Write-Host $(Get-Location) -NoNewline -ForegroundColor Cyan
+    return "> "
+}

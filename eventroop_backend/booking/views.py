@@ -876,8 +876,16 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
     - Manual recalculation endpoints
     """
     queryset = TotalInvoice.objects.select_related(
-        'secondary_order','ternary_order', 'patient', 'user'
+        'secondary_order__primary_order__venue__location',
+        'secondary_order__primary_order__service',
+        'secondary_order__primary_order__package',
+        'ternary_order__venue__location',
+        'ternary_order__service',
+        'ternary_order__package',
+        'user',
+        'patient',
     ).prefetch_related('payments')
+
     serializer_class = TotalInvoiceSerializer
     search_fields = ['invoice_number', 'patient__first_name', 'patient__last_name', 'status']
     filterset_fields = {
@@ -936,63 +944,31 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
     
         return queryset
     
-
     def list(self, request, *args, **kwargs):
-
         queryset = self.filter_queryset(self.get_queryset()).order_by('user_id', 'patient_id')
-
+        
         grouped_data = []
-
+        
         for (user_id, patient_id), invoices_group in groupby(
             queryset,
             key=lambda x: (x.user_id, x.patient_id)
         ):
-
             invoices_list = list(invoices_group)
-
+            
             if not invoices_list:
                 continue
-
+            
             first_invoice = invoices_list[0]
             user = first_invoice.user
             patient = first_invoice.patient
-
+            
             total_invoice_amount = sum(inv.total_amount for inv in invoices_list)
             total_paid = sum(inv.paid_amount for inv in invoices_list)
             total_balance = total_invoice_amount - total_paid
-
-            invoices_array = []
-
-            for invoice in invoices_list:
-
-                payments = invoice.payments.all()
-
-                payment_details = [
-                    {
-                        "id": str(p.id),
-                        "payment_date": str(p.created_at),
-                        "amount": str(p.amount),
-                        "paid_date": str(p.paid_date),
-                        "method": p.method,
-                        "is_verified": p.is_verified,
-                        "reference": p.reference or "-"
-                    }
-                    for p in payments
-                ]
-
-                invoices_array.append({
-                    "id": str(invoice.id),
-                    "invoice_date": str(invoice.issued_date),
-                    "invoice_number": invoice.invoice_number,
-                    "invoice_amount": str(invoice.total_amount),
-                    "period_start": str(invoice.period_start),
-                    "period_end": str(invoice.period_end),
-                    "paid": str(invoice.paid_amount),
-                    "balance": str(invoice.remaining_amount),
-                    "status": invoice.get_status_display(),
-                    "payment_details": payment_details
-                })
-
+            
+            serializer = self.serializer_class(invoices_list, many=True)
+            invoices_array = serializer.data
+            
             grouped_data.append({
                 "user_id": user.id,
                 "user_name": user.get_full_name(),
@@ -1003,14 +979,13 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
                 "total_balance": str(total_balance),
                 "invoices": invoices_array
             })
-
+        
         page = self.paginate_queryset(grouped_data)
-
+        
         if page is not None:
             return self.get_paginated_response(page)
-
+        
         return Response(grouped_data)
-
     @action(detail=True, methods=['get'])
     def recalculate(self, request, pk=None):
         """
@@ -1073,12 +1048,6 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
         serializer = self.serializer_class(overdue_invoices, many=True)
         return Response(serializer.data)
     
-    @action(detail=True, methods=['get'])
-    def payments(self, request, pk=None):
-        """Get all payments for a specific invoice."""
-        invoice = self.get_object()
-        info = invoice.get_payments_info()
-        return Response(info)
 
 class PaymentViewSet(viewsets.ModelViewSet):
     """

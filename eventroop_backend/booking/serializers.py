@@ -446,7 +446,6 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
         
         return PrimaryOrder.objects.create(**validated_data)
 
-
 class PaymentSerializer(serializers.ModelSerializer):
     """Serializer for Payment model"""
 
@@ -459,8 +458,10 @@ class PaymentSerializer(serializers.ModelSerializer):
             'paid_date',
             'reference',
             'is_verified',
+            'created_at',
+            'updated_at',
         ]
-        read_only_fields = ['id', 'reference']
+        read_only_fields = ['id', 'reference','created_at','updated_at',]
 
 class PaymentCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating payments"""
@@ -489,47 +490,25 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
     """
 
     payments = PaymentSerializer(many=True, read_only=True)
-
-    patient_name = serializers.CharField(
-        source='patient.get_full_name',
-        read_only=True,
-    )
-    user_name = serializers.CharField(
-        source='user.get_full_name',
-        read_only=True,
-    )
-    venue_name = serializers.CharField(
-        source='booking.venue.name',
-        read_only=True,
-        allow_null=True,
-    )
+    booking = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = TotalInvoice
         fields = [
-            # core
             'id',
             'invoice_number',
             'status',
-            # relations
-            'secondary_order',          # PrimaryOrder FK
-            'patient',
-            'patient_name',
-            'user',
-            'user_name',
-            'venue_name',
-            # period
             'period_start',
             'period_end',
-            # amounts
             'total_amount',
             'paid_amount',
             'remaining_amount',
+            'discount_amount',
+            'premium_amount',
             'tax_amount',
-            # dates
             'issued_date',
             'due_date',
-            # nested
+            'booking',
             'payments',
         ]
         read_only_fields = [
@@ -550,6 +529,26 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
         if value < 0:
             raise serializers.ValidationError("Tax amount cannot be negative.")
         return value
+    
+    def get_booking(self, obj):
+        """Extract booking details from secondary or ternary order"""
+        order = obj.secondary_order or obj.ternary_order
+        
+        if not order:
+            return None
+        
+        if hasattr(order, 'primary_order'):
+            booking_obj = order.primary_order
+        else:
+            booking_obj = order
+        
+        return {
+            "order_id": booking_obj.order_id,
+            "venue": booking_obj.venue.name,
+            "locality": booking_obj.venue.location.locality,
+            "service": booking_obj.service.name,
+            "package": booking_obj.package.name,
+        }
 
 class InvoiceSummarySerializer(serializers.Serializer):
     """Serializer for invoice summary / statistics"""

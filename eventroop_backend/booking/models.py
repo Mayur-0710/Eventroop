@@ -1036,11 +1036,17 @@ class TotalInvoice(models.Model):
     # ── Payments ───────────────────────────────────────────────────────────────
     def recalculate_payments(self):
         """Recompute paid_amount, remaining_amount and status from all payments."""
-        self.paid_amount = self.payments.aggregate(
+        total_paid = self.payments.aggregate(
             total=Coalesce(Sum("amount"), Decimal("0.00"))
         )["total"]
+        
+        self.paid_amount = (
+            total_paid + self.premium_amount - self.discount_amount
+        )
 
-        self.remaining_amount = max(self.total_amount - self.paid_amount, Decimal("0.00"))
+        self.remaining_amount = max(
+            self.total_amount - self.paid_amount, Decimal("0.00")
+        )
 
         if self.paid_amount <= 0:
             self.status = InvoiceStatus.UNPAID
@@ -1082,6 +1088,7 @@ class Payment(models.Model):
 
     is_verified = models.BooleanField(default=False)
     created_at  = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-paid_date"]

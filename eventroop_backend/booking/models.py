@@ -270,7 +270,6 @@ class Patient(models.Model):
             self.patient_id = f"{self.pk:05}"
             super().save(update_fields=["patient_id"])
 
-# PrimaryOrder
 class PrimaryOrder(models.Model):
     order_id = models.CharField(max_length=50, blank=True)
 
@@ -585,7 +584,6 @@ class PrimaryOrder(models.Model):
         self.total_bill = total
         super().save(update_fields=["total_bill"])
  
-# SecondaryOrder
 class SecondaryOrder(models.Model):
     """One record per period (month/week/day) within a PrimaryOrder span."""
 
@@ -693,7 +691,6 @@ class SecondaryOrder(models.Model):
         if invoice:
             invoice.sync_from_secondary()
 
-# TernaryOrder
 class TernaryOrder(models.Model):
     """One record per service/booking line item within a SecondaryOrder."""
     
@@ -807,7 +804,6 @@ class TernaryOrder(models.Model):
         if invoice:
             invoice.sync_from_ternary()
 
-# TotalInvoice
 class TotalInvoice(models.Model):
     """One invoice per SecondaryOrder or TernaryOrder."""
 
@@ -1074,7 +1070,6 @@ class TotalInvoice(models.Model):
         if invoice:
             invoice.sync_from_ternary()
 
-# Payment  — unchanged, still links to TotalInvoice
 class Payment(models.Model):
     invoice = models.ForeignKey(
         TotalInvoice, related_name="payments", on_delete=models.CASCADE

@@ -102,6 +102,8 @@ CHANNEL_LAYERS = {
 
 CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
 # TODO: currenly working on 1 cpu because db is free version, Update later
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
 CELERY_WORKER_POOL = 'solo'
 CELERY_WORKER_CONCURRENCY = 1 
 

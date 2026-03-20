@@ -49,6 +49,26 @@ def auto_update_status(start_datetime,end_datetime):
         status = BookingStatus.FULFILLED
     return status
 
+def bulk_update_status(queryset, model):
+    """Reusable helper — filters, computes, bulk updates."""
+    orders = queryset.filter(
+        status_locked=False
+    ).exclude(
+        status__in=[BookingStatus.CANCELLED, BookingStatus.DRAFT]
+    )
+
+    to_update = []
+    for order in orders:
+        new_status = auto_update_status(order.start_datetime, order.end_datetime)
+        if new_status != order.status:
+            order.status = new_status
+            to_update.append(order)
+
+    if to_update:
+        model.objects.bulk_update(to_update, ["status"])
+
+    return len(to_update)
+
 def generate_order_id(instance):
     if not instance.id:
         raise ValueError("Instance must be saved before generating order_id")

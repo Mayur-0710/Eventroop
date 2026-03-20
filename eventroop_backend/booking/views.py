@@ -705,13 +705,14 @@ class OrderViewSet(viewsets.ModelViewSet):
                     ternary_order.status  = BookingStatus.MODIFIED
                 else:
                     ternary_order.status  = BookingStatus.RESCHEDULED
+                target.status_locked = True
 
                 if discount_amount is not None:
                     ternary_order.discount_amount = discount_amount
                 if premium_amount is not None:
                     ternary_order.premium_amount  = premium_amount
                 
-                ternary_order.save(skip_auto_status=True)
+                ternary_order.save()
 
                 ternary_order.secondary_order.recalculate_subtotal()
                 primary_order.recalculate_total()
@@ -779,7 +780,8 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             target.status = new_status
-            target.save(update_fields=['status'], skip_auto_status=True)
+            target.status_locked = True
+            target.save(update_fields=['status','status_locked'])
 
             # If primary order is canceled, force cascade to ALL secondaries and ternaries
             if target == primary_order and new_status == BookingStatus.CANCELLED:

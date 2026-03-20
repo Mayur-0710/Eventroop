@@ -9,6 +9,7 @@ from django.contrib.contenttypes import fields, models as ct_models
 from decimal import Decimal
 import uuid
 from .constants import *
+# TODO : remove functional auto_update_status from save method
 from .utils import auto_update_status,generate_order_id,calculate_amount
 from datetime import timedelta,datetime, time
 from dateutil.relativedelta import relativedelta
@@ -319,6 +320,7 @@ class PrimaryOrder(models.Model):
         default=BookingStatus.DRAFT,
         db_index=True,
     )
+    status_locked = models.BooleanField(default=False)
     auto_continue = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -605,7 +607,7 @@ class SecondaryOrder(models.Model):
         default=BookingStatus.DRAFT,
         db_index=True,
     )
-
+    status_locked = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -708,7 +710,8 @@ class TernaryOrder(models.Model):
         default=BookingStatus.DRAFT,
         db_index=True,
     )
-
+    status_locked = models.BooleanField(default=False)
+    
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -744,7 +747,7 @@ class TernaryOrder(models.Model):
         if not self.order_id:
             self.order_id = generate_order_id(self)
             super().save(update_fields=["order_id"])
-        
+
 class TotalInvoice(models.Model):
     """One invoice per SecondaryOrder or TernaryOrder."""
 

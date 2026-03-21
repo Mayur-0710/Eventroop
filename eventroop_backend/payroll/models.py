@@ -102,7 +102,7 @@ class SalaryStructure(models.Model):
             self.final_salary = previous_salary
 
         super().save(*args, **kwargs)
-        
+
 class SalaryReport(models.Model):
     """
     Salary calculation & payment breakdown report.

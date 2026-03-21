@@ -19,6 +19,7 @@ urlpatterns = [
     path('attendance/', include(('attendance.urls', 'attendance'), namespace='attendance')),
     path('payroll/', include(('payroll.urls', 'payroll'), namespace='payroll')),
     path('notification/', include(('notification.urls', 'notification'), namespace='notification')),
+    path('analysis/', include(('analysis.urls', 'analysis'), namespace='analysis')),
 ]
 
 urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)

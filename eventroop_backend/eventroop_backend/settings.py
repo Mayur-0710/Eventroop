@@ -72,6 +72,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 CSRF_TRUSTED_ORIGINS = [
     "redis://127.0.0.1:6379",
     "http://localhost",
+    "http://13.127.228.154",
     "http://127.0.0.1",
     "http://localhost:5173",
     "https://*.vercel.app",
@@ -94,11 +95,14 @@ WSGI_APPLICATION = 'eventroop_backend.wsgi.application'
 ASGI_APPLICATION = "eventroop_backend.asgi.application"
 
 # ----------------- Notification, Redis, Celery and channel -----------------
+
 CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {'hosts': [('127.0.0.1', 6379)]},
-    }
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [(os.getenv("REDIS_HOST", "127.0.0.1"), int(os.getenv("REDIS_PORT", 6379)))],
+        },
+    },
 }
 
 CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"

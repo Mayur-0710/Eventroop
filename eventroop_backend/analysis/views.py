@@ -5,18 +5,22 @@ from django.db.models.functions import Coalesce
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-
+from collections import defaultdict
 
 from accounts.models import CustomUser
-from attendance.models import AttendanceReport
+from attendance.models import AttendanceReport,Attendance
 from payroll.models import  SalaryStructure, SalaryReport, SalaryTransaction
-from .serializers import EmployeeSalaryAnalysisSerializer
-from .filters import build_employee_filters, build_period_filters, build_sort, ALLOWED_EMPLOYEE_SORT_FIELDS
 
+from .serializers import EmployeeSalaryAnalysisSerializer
+from .filters import (
+    build_employee_filters,
+    build_period_filters,
+    build_sort,
+    ALLOWED_EMPLOYEE_SORT_FIELDS,
+    AttendanceAnalysisFilter
+)
 
 ZERO = Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))
-
 
 class SalaryAnalysisAPIView(APIView):
     """
@@ -87,7 +91,6 @@ class SalaryAnalysisAPIView(APIView):
         status, payment_date
     """
 
-    permission_classes = [IsAuthenticated]
     ALLOWED_TYPES = ["VSRE_MANAGER", "LINE_MANAGER", "VSRE_STAFF"]
 
     # ------------------------------------------------------------------
@@ -280,3 +283,227 @@ class SalaryAnalysisAPIView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+from rest_framework.pagination import PageNumberPagination
+
+
+# ── Pagination classes ──────────────────────────────────────────────────────
+
+class AttendancePagination(PageNumberPagination):
+    page_size              = 10        # default records per page
+    page_size_query_param  = 'page_size'
+    max_page_size          = 100
+    page_query_param       = 'page'
+
+    def get_paginated_response(self, data, extra_meta=None):
+        """Extend default response with extra_meta (totals, group_by, etc.)"""
+        payload = {
+            'pagination': {
+                'total_records': self.page.paginator.count,
+                'total_pages':   self.page.paginator.num_pages,
+                'current_page':  self.page.number,
+                'page_size':     self.get_page_size(self.request),
+                'next':          self.get_next_link(),
+                'previous':      self.get_previous_link(),
+            },
+        }
+        if extra_meta:
+            payload.update(extra_meta)
+        payload['data'] = data
+        return Response(payload)
+
+# ── Main View ───────────────────────────────────────────────────────────────
+
+class AttendanceAnalysisAPIView(APIView):
+    """
+    GET /api/attendance/analysis/
+
+    Query Params:
+        -- Filters --
+        date_from, date_to, date, month, year, week
+        status_code, status_label, status_id
+        user_id, employee_id, user_type, category, city, name_search
+
+        -- Grouping & Ordering --
+        group_by : employee (default) | date | status | month
+        ordering : date | -date | user__first_name | status__code
+
+        -- Pagination --
+        page      : page number (default 1)
+        page_size : records per page (default 10, max 100)
+    """
+
+
+    # ── Scope queryset by role ──────────────────────────────────
+    def _base_queryset(self, request):
+        qs = (
+            Attendance.objects
+            .select_related('user', 'status')
+            .only(
+                'date',
+                'user__id', 'user__employee_id',
+                'user__first_name', 'user__last_name',
+                'user__user_type', 'user__category',
+                'status__code', 'status__label',
+            )
+        )
+        user = request.user
+        if user.user_type == 'MASTER_ADMIN':
+            return qs
+        if user.user_type == 'VSRE_OWNER':
+            return qs.filter(user__created_by=user)
+        if user.user_type in ('VSRE_MANAGER', 'LINE_MANAGER'):
+            return qs.filter(user__created_by=user)
+        return qs.filter(user=user)
+
+    def get(self, request, *args, **kwargs):
+        qs = self._base_queryset(request)
+
+        # Apply filters
+        filterset = AttendanceAnalysisFilter(request.GET, queryset=qs, request=request)
+        if not filterset.is_valid():
+            return Response(filterset.errors, status=status.HTTP_400_BAD_REQUEST)
+        qs = filterset.qs
+
+        # Apply ordering
+        ordering = request.GET.get('ordering', '-date')
+        allowed  = {'date', '-date', 'user__first_name', '-user__first_name', 'status__code', '-status__code'}
+        if ordering in allowed:
+            qs = qs.order_by(ordering)
+
+        group_by = request.GET.get('group_by', 'employee')
+        paginator = AttendancePagination()
+
+        if group_by == 'month':
+            return self._paginate_grouped(request, qs, paginator, self._group_by_month, 'month')
+        if group_by == 'date':
+            return self._paginate_grouped(request, qs, paginator, self._group_by_date, 'date')
+        if group_by == 'status':
+            return self._paginate_grouped(request, qs, paginator, self._group_by_status, 'status')
+
+        return self._paginate_grouped(request, qs, paginator, self._group_by_employee, 'employee')
+
+    # ── Pagination wrapper for grouped data ─────────────────────
+    def _paginate_grouped(self, request, qs, paginator, group_fn, group_by_label):
+        """
+        Groups the full queryset first, then paginates the grouped list.
+        This ensures page_size = N groups (employees/dates/statuses), not N raw rows.
+        """
+        grouped_list = group_fn(qs)                          # list of dicts
+        paginated    = paginator.paginate_queryset(grouped_list, request)
+        return paginator.get_paginated_response(
+            data       = paginated,
+            extra_meta = {
+                'group_by':    group_by_label,
+                'total_groups': len(grouped_list),
+            }
+        )
+
+    # ── Grouping helpers ────────────────────────────────────────
+
+    def _group_by_month(self, qs) -> list:
+        """
+        Groups by YEAR-MONTH → then by each DATE inside that month.
+        Each month entry contains:
+        - year, month, month_label
+        - total_days   : distinct dates recorded
+        - status_summary : {PRESENT: N, ABSENT: N, …} across all employees for the month
+        - days         : [{ date, total, records: [{employee_id, name, status_code, status_label}] }]
+        """
+        from collections import defaultdict
+        import calendar
+
+        # month_key  → date_key → list of records
+        month_map = defaultdict(lambda: defaultdict(list))
+
+        for att in qs:
+            month_key = (att.date.year, att.date.month)   # (2025, 1)
+            date_key  = str(att.date)                      # "2025-01-15"
+            month_map[month_key][date_key].append({
+                'employee_id':  att.user.employee_id or str(att.user.id),
+                'name':         att.user.get_full_name(),
+                'status_code':  att.status.code,
+                'status_label': att.status.label,
+            })
+
+        result = []
+        for (year, month), date_map in sorted(month_map.items(), reverse=True):
+            # Build per-date list
+            days = [
+                {
+                    'date':    d,
+                    'total':   len(records),
+                    'records': records,
+                }
+                for d, records in sorted(date_map.items())
+            ]
+
+            # Aggregate status summary across the whole month
+            status_summary = defaultdict(int)
+            for day in days:
+                for rec in day['records']:
+                    status_summary[rec['status_code']] += 1
+
+            result.append({
+                'year':           year,
+                'month':          month,
+                'month_label':    calendar.month_name[month],   # "January"
+                'month_key':      f"{year}-{month:02d}",        # "2025-01"
+                'total_days':     len(days),
+                'status_summary': dict(status_summary),
+                'days':           days,
+            })
+
+        return result
+    
+    def _group_by_employee(self, qs) -> list:
+        grouped = defaultdict(lambda: {'records': [], 'summary': defaultdict(int)})
+
+        for att in qs:
+            key = att.user.employee_id or str(att.user.id)
+            grouped[key].setdefault('name', att.user.get_full_name())
+            grouped[key].setdefault('employee_id', key)
+            grouped[key]['records'].append({
+                'date':         str(att.date),
+                'status_code':  att.status.code,
+                'status_label': att.status.label,
+            })
+            grouped[key]['summary'][att.status.code] += 1
+
+        return [
+            {
+                'employee_id':   emp_id,
+                'name':          info['name'],
+                'total_records': len(info['records']),
+                'summary':       dict(info['summary']),
+                'attendance':    info['records'],
+            }
+            for emp_id, info in grouped.items()
+        ]
+
+    def _group_by_date(self, qs) -> list:
+        grouped = defaultdict(list)
+        for att in qs:
+            grouped[str(att.date)].append({
+                'employee_id':  att.user.employee_id or str(att.user.id),
+                'name':         att.user.get_full_name(),
+                'status_code':  att.status.code,
+                'status_label': att.status.label,
+            })
+        return [
+            {'date': d, 'total': len(records), 'records': records}
+            for d, records in sorted(grouped.items(), reverse=True)
+        ]
+
+    def _group_by_status(self, qs) -> list:
+        grouped = defaultdict(list)
+        for att in qs:
+            grouped[att.status.code].append({
+                'date':        str(att.date),
+                'employee_id': att.user.employee_id or str(att.user.id),
+                'name':        att.user.get_full_name(),
+            })
+        return [
+            {'status_code': code, 'total': len(records), 'records': records}
+            for code, records in grouped.items()
+        ]

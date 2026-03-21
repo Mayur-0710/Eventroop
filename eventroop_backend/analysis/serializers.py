@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from attendance.models import Attendance, AttendanceStatus
 
 
 class SalaryPeriodSerializer(serializers.Serializer):
@@ -27,3 +28,21 @@ class EmployeeSalaryAnalysisSerializer(serializers.Serializer):
     last_name       = serializers.CharField()
     mobile_number   = serializers.CharField()
     periods         = SalaryPeriodSerializer(many=True)
+
+class AttendanceStatusSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AttendanceStatus
+        fields = ['id', 'code', 'label']
+
+class AttendanceDailySerializer(serializers.ModelSerializer):
+    status_code  = serializers.CharField(source='status.code')
+    status_label = serializers.CharField(source='status.label')
+    employee_id  = serializers.CharField(source='user.employee_id')
+    name         = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Attendance
+        fields = ['date', 'status_code', 'status_label', 'employee_id', 'name']
+
+    def get_name(self, obj):
+        return obj.user.get_full_name()

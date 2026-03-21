@@ -95,17 +95,17 @@ WSGI_APPLICATION = 'eventroop_backend.wsgi.application'
 ASGI_APPLICATION = "eventroop_backend.asgi.application"
 
 # ----------------- Notification, Redis, Celery and channel -----------------
-
+REDIS_URL = os.getenv("REDIS_URL","redis://127.0.0.1:6379/0" )
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [(os.getenv("REDIS_HOST", "127.0.0.1"), int(os.getenv("REDIS_PORT", 6379)))],
+            "hosts": [REDIS_URL],
         },
     },
 }
 
-CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
+CELERY_BROKER_URL = REDIS_URL
 # TODO: currenly working on 1 cpu because db is free version, Update later
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"

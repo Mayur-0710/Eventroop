@@ -124,10 +124,10 @@ def build_employee_filters(params: dict) -> tuple[Q, list[str]]:
         )
 
     # --- Status filter ---
-    if status := params.get("status").strip().lower():
-        if status == "active":
+    if status := params.get("status"):
+        if status.lower() == "active":
             q &= Q(is_active=True)
-        elif status == "inactive":
+        elif status.lower() == "inactive":
             q &= Q(is_active=False)
         else:
             errors["status"] = f"Invalid value '{status}'. Must be one of: active, inactive"

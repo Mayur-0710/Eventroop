@@ -1,118 +1,62 @@
+import calendar
+from collections import defaultdict
 from decimal import Decimal
 
-from django.db.models import OuterRef, Subquery, Value, DecimalField, ExpressionWrapper, F
+from django.db.models import (
+    DecimalField,
+    ExpressionWrapper,
+    F,
+    OuterRef,
+    Subquery,
+    Value,
+)
 from django.db.models.functions import Coalesce
 from rest_framework import status
 from rest_framework.response import Response
+from rest_framework.settings import api_settings
 from rest_framework.views import APIView
-from collections import defaultdict
 
-from accounts.models import CustomUser
-from attendance.models import AttendanceReport,Attendance
-from payroll.models import  SalaryStructure, SalaryReport, SalaryTransaction
+from attendance.models import  AttendanceReport
+from payroll.models import SalaryReport, SalaryStructure
 
-from .serializers import EmployeeSalaryAnalysisSerializer
 from .filters import (
+    ALLOWED_EMPLOYEE_SORT_FIELDS,
     build_employee_filters,
     build_period_filters,
     build_sort,
-    ALLOWED_EMPLOYEE_SORT_FIELDS,
-    AttendanceAnalysisFilter
+)
+from .mixins import PermissionScopeMixin
+from .serializers import EmployeeSalaryAnalysisSerializer, UserAttendanceSerializer
+
+ZERO = Decimal("0.00")
+_ZERO_FIELD = Value(
+    Decimal("0.00"),
+    output_field=DecimalField(max_digits=12, decimal_places=2),
 )
 
-ZERO = Value(Decimal("0.00"), output_field=DecimalField(max_digits=12, decimal_places=2))
 
-class SalaryAnalysisAPIView(APIView):
+class SalaryAnalysisAPIView(PermissionScopeMixin, APIView):
     """
-    GET /api/analysis/salary/
+    Returns paginated salary analysis per employee, with a summary block.
 
-    Retrieve salary periods grouped by employee, with support for
-    advanced filtering, sorting, and pagination.
-
-    ────────────────────────────────────────────
-    EMPLOYEE-LEVEL FILTERS
-    ────────────────────────────────────────────
-    user_id                : Exact employee primary key
-    user_type              : VSRE_MANAGER | LINE_MANAGER | VSRE_STAFF
-    emp_id                 : Exact employee ID
-    emp_id__icontains      : Partial match on employee ID
-    first_name__icontains  : Partial match on first name
-    last_name__icontains   : Partial match on last name
-    mobile_number          : Exact mobile number
-    search                 : Searches across first_name, last_name,
-                            emp_id, and mobile_number
-
-    ────────────────────────────────────────────
-    PERIOD-LEVEL FILTERS
-    ────────────────────────────────────────────
-    start_date             : Exact date (YYYY-MM-DD)
-    start_date__gte        : Start date ≥ given value
-    start_date__lte        : Start date ≤ given value
-    end_date               : Exact date (YYYY-MM-DD)
-    end_date__gte          : End date ≥ given value
-    end_date__lte          : End date ≤ given value
-
-    days_present__gte/lte  : Filter by days present
-    days_absent__gte/lte   : Filter by days absent
-    base_salary__gte/lte   : Filter by base salary
-    salary__gte/lte        : Filter by salary
-    total_salary__gte/lte  : Filter by total salary
-    amount_paid__gte/lte   : Filter by amount paid
-
-    status                 : PENDING | PROCESSING | SUCCESS |
-                            FAILED | CANCELLED
-
-    ────────────────────────────────────────────
-    SORTING
-    ────────────────────────────────────────────
-    sort_by                : Comma-separated fields
-                            (e.g., sort_by=start_date,salary)
-    sort_dir               : asc (default) | desc
-                            Applies to all sort fields
-
-    ────────────────────────────────────────────
-    PAGINATION (EMPLOYEE LEVEL)
-    ────────────────────────────────────────────
-    page                   : Page number (default: 1)
-    page_size              : Results per page (default: 20, max: 100)
-
-    ────────────────────────────────────────────
-    SORTABLE FIELDS
-    ────────────────────────────────────────────
-    Employee fields:
-        emp_id, first_name, last_name,
-        mobile_number, user_type
-
-    Period fields:
-        start_date, end_date, calendar_days,
-        days_present, days_absent,
-        base_salary, salary, total_salary,
-        amount_paid, excess_balance,
-        status, payment_date
+    Permission scoping (via PermissionScopeMixin):
+        - Superuser  → all employees
+        - Owner      → employees in their hierarchy
+        - Staff/Mgr  → only themselves
     """
 
-    ALLOWED_TYPES = ["VSRE_MANAGER", "LINE_MANAGER", "VSRE_STAFF"]
+    pagination_class = api_settings.DEFAULT_PAGINATION_CLASS
 
     # ------------------------------------------------------------------
-    # Subquery builders
+    # Subquery / annotation builders
     # ------------------------------------------------------------------
 
     @staticmethod
     def _build_annotations():
-        """Returns dict of annotations to apply on SalaryReport queryset."""
-
         attendance_base = AttendanceReport.objects.filter(
             user=OuterRef("user_id"),
             start_date=OuterRef("start_date"),
             end_date=OuterRef("end_date"),
-        )
-
-        base_salary_sq = Subquery(
-            SalaryStructure.objects.filter(
-                user=OuterRef("user_id"),
-                change_type="BASE_SALARY",
-                effective_from__lte=OuterRef("start_date"),
-            ).order_by("-effective_from").values("amount")[:1]
         )
 
         final_salary_sq = Subquery(
@@ -120,26 +64,95 @@ class SalaryAnalysisAPIView(APIView):
                 user=OuterRef("user_id"),
                 change_type__in=["BASE_SALARY", "INCREMENT"],
                 effective_from__lte=OuterRef("start_date"),
-            ).order_by("-effective_from").values("final_salary")[:1]
+            )
+            .order_by("-effective_from")
+            .values("final_salary")[:1]
         )
 
-        latest_tx = SalaryTransaction.objects.filter(
-            salary_report=OuterRef("pk"),
-        ).order_by("-created_at")
+        absent_days_sq    = Subquery(attendance_base.values("absent_days")[:1])
+        unpaid_leaves_sq  = Subquery(attendance_base.values("unpaid_leaves")[:1])
+        half_day_count_sq = Subquery(attendance_base.values("half_day_count")[:1])
+
+        total_unpaid_days = ExpressionWrapper(
+            Coalesce(absent_days_sq, _ZERO_FIELD)
+            + Coalesce(unpaid_leaves_sq, _ZERO_FIELD)
+            + Decimal("0.5") * Coalesce(half_day_count_sq, _ZERO_FIELD),
+            output_field=DecimalField(max_digits=10, decimal_places=2),
+        )
+
+        excess_balance = ExpressionWrapper(
+            F("paid_amount") - F("total_payable_amount"),
+            output_field=DecimalField(max_digits=12, decimal_places=2),
+        )
 
         return {
-            "days_present": Coalesce(Subquery(attendance_base.values("present_days")[:1]), ZERO),
-            "days_absent":  Coalesce(Subquery(attendance_base.values("absent_days")[:1]),  ZERO),
-            "base_salary":  Coalesce(base_salary_sq,  ZERO),
-            "salary":       Coalesce(final_salary_sq, ZERO),
-            "tx_status":    Subquery(latest_tx.values("status")[:1]),
-            "payment_date": Subquery(latest_tx.values("processed_at")[:1]),
-            # excess_balance = paid_amount - total_payable_amount
-            "excess_balance": ExpressionWrapper(
-                F("paid_amount") - F("total_payable_amount"),
-                output_field=DecimalField(max_digits=12, decimal_places=2),
+            "total_payable_days": Coalesce(
+                Subquery(attendance_base.values("total_payable_days")), _ZERO_FIELD
             ),
+            "total_unpaid_days": total_unpaid_days,
+            "salary": Coalesce(final_salary_sq, _ZERO_FIELD),
+            "excess_balance": excess_balance,
         }
+
+    # ------------------------------------------------------------------
+    # Summary helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_summary(reports):
+        """
+        Single pass over the already-filtered, annotated report list.
+        Returns totals and overall attendance percentage.
+        """
+        total_salary        = ZERO
+        total_paid          = ZERO
+        total_excess        = ZERO
+        total_payable_days  = 0
+        total_calendar_days = 0
+
+        for report in reports:
+            total_salary       += report.total_payable_amount or ZERO
+            total_paid         += report.paid_amount          or ZERO
+            total_excess       += report.excess_balance       or ZERO
+            total_payable_days += int(report.total_payable_days or 0)
+            total_calendar_days += int(
+                (report.end_date - report.start_date).days + 1 or 0
+            )
+
+        total_attendance_pct = (
+            round((total_payable_days / total_calendar_days) * 100, 2)
+            if total_calendar_days > 0
+            else None
+        )
+
+        return {
+            "totals": {
+                "total_salary":         total_salary,
+                "total_amount_paid":    total_paid,
+                "total_excess_balance": total_excess,
+            },
+            "attendance": {
+                "total_days_present":   total_payable_days,
+                "total_attendance_pct": total_attendance_pct,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Payment status helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _payment_status(report):
+        excess = report.excess_balance
+        paid   = report.paid_amount
+
+        if excess >= 0:
+            return "Paid"
+        if paid == 0:
+            return "Unpaid"
+        if paid > 0 and excess < 0:
+            return "Partially Paid"
+        return None
 
     # ------------------------------------------------------------------
     # Main handler
@@ -149,361 +162,238 @@ class SalaryAnalysisAPIView(APIView):
         params = request.query_params
         errors = {}
 
-        # ---- pagination ----
-        try:
-            page = max(1, int(params.get("page", 1)))
-        except (ValueError, TypeError):
-            errors["page"] = "Must be a positive integer."
-            page = 1
+        emp_q,    emp_errors    = build_employee_filters(params)
+        period_q, period_errors = build_period_filters(params)
+        order_by, sort_errors   = build_sort(params)
 
-        try:
-            page_size = min(100, max(1, int(params.get("page_size", 20))))
-        except (ValueError, TypeError):
-            errors["page_size"] = "Must be a positive integer (max 100)."
-            page_size = 20
-
-        # ---- filters ----
-        emp_q, emp_filter_errors       = build_employee_filters(params)
-        period_q, period_filter_errors = build_period_filters(params)
-
-        # ---- sorting ----
-        order_by, sort_errors = build_sort(params)
-
-        all_errors = errors
-        if emp_filter_errors:
-            all_errors["employee_filters"] = emp_filter_errors
-        if period_filter_errors:
-            all_errors["period_filters"] = period_filter_errors
+        if emp_errors:
+            errors["employee_filters"] = emp_errors
+        if period_errors:
+            errors["period_filters"] = period_errors
         if sort_errors:
-            all_errors["sort"] = sort_errors
+            errors["sort"] = sort_errors
 
-        if all_errors:
-            return Response({"errors": all_errors}, status=status.HTTP_400_BAD_REQUEST)
+        if errors:
+            return Response({"errors": errors}, status=status.HTTP_400_BAD_REQUEST)
 
-        # ------------------------------------------------------------------
-        # 1. Determine if sort is employee-level or period-level
-        #    Employee-level sorts → apply on CustomUser queryset
-        #    Period-level sorts   → apply on SalaryReport queryset
-        # ------------------------------------------------------------------
-        emp_sort_fields    = set(ALLOWED_EMPLOYEE_SORT_FIELDS.values())
-        employee_order_by  = [o for o in order_by if o.lstrip("-") in emp_sort_fields]
-        period_order_by    = [o for o in order_by if o.lstrip("-") not in emp_sort_fields]
+        # ── Sort levels ──────────────────────────────────────────────────
+        emp_sort_fields   = set(ALLOWED_EMPLOYEE_SORT_FIELDS.values())
+        employee_order_by = [o for o in order_by if o.lstrip("-") in emp_sort_fields] or ["id"]
+        period_order_by   = [o for o in order_by if o.lstrip("-") not in emp_sort_fields] or ["-start_date"]
 
-        # Default ordering when nothing specified
-        if not employee_order_by:
-            employee_order_by = ["id"]
-        if not period_order_by:
-            period_order_by = ["-start_date"]
-
-        # ------------------------------------------------------------------
-        # 2. Employee queryset (paginated)
-        # ------------------------------------------------------------------
-        employees = (
-            CustomUser.objects
-            .filter(
-                user_type__in=self.ALLOWED_TYPES,
-                is_deleted=False,
-            )
+        # ── Scoped + paginated employee queryset ─────────────────────────
+        employee_qs = (
+            self.get_user_queryset(request)   # permission-scoped
             .filter(emp_q)
             .order_by(*employee_order_by)
         )
 
-        total_employees = employees.count()
-        offset          = (page - 1) * page_size
-        employees       = list(employees[offset: offset + page_size])
-        employee_ids    = [e.id for e in employees]
+        paginator      = self.pagination_class()
+        paginated_emps = paginator.paginate_queryset(employee_qs, request, view=self)
+        employee_ids   = [e.id for e in paginated_emps]
 
-        # ------------------------------------------------------------------
-        # 3. SalaryReport queryset — filtered, annotated, sorted
-        # ------------------------------------------------------------------
-        all_reports = (
-            SalaryReport.objects
-            .filter(user_id__in=employee_ids)
+        # ── SalaryReport queryset ────────────────────────────────────────
+        all_reports = list(
+            SalaryReport.objects.filter(user_id__in=employee_ids)
             .filter(period_q)
             .select_related("user")
             .annotate(**self._build_annotations())
             .order_by("user_id", *period_order_by)
         )
 
-        # ------------------------------------------------------------------
-        # 4. Group reports by employee
-        # ------------------------------------------------------------------
-        periods_by_user: dict[int, list] = {e.id: [] for e in employees}
+        # ── Group reports by employee ────────────────────────────────────
+        periods_by_user: dict[int, list] = {e.id: [] for e in paginated_emps}
 
         for report in all_reports:
-            total_salary   = report.total_payable_amount or Decimal("0.00")
-            amount_paid    = report.paid_amount          or Decimal("0.00")
-            excess_balance = (report.excess_balance      or Decimal("0.00"))
+            calendar_days = (report.end_date - report.start_date).days + 1
+            periods_by_user[report.user_id].append(
+                {
+                    "start_date":         report.start_date,
+                    "end_date":           report.end_date,
+                    "calendar_days":      calendar_days,
+                    "attendance_pct":     round(
+                        (report.total_payable_days / calendar_days) * 100, 2
+                    ),
+                    "total_payable_days": report.total_payable_days,
+                    "total_unpaid_days":  report.total_unpaid_days,
+                    "salary":             report.salary,
+                    "total_salary":       report.total_payable_amount or ZERO,
+                    "payment_status":     self._payment_status(report),
+                    "amount_paid":        report.paid_amount or ZERO,
+                    "excess_balance":     report.excess_balance or ZERO,
+                }
+            )
 
-            periods_by_user[report.user_id].append({
-                "start_date":     report.start_date,
-                "end_date":       report.end_date,
-                "calendar_days":  (report.end_date - report.start_date).days + 1,
-                "days_present":   report.days_present,
-                "days_absent":    report.days_absent,
-                "base_salary":    report.base_salary,
-                "salary":         report.salary,
-                "total_salary":   total_salary,
-                "status":         report.tx_status,
-                "payment_date":   report.payment_date,
-                "amount_paid":    amount_paid,
-                "excess_balance": excess_balance,
-            })
-
-        # ------------------------------------------------------------------
-        # 5. Build response
-        # ------------------------------------------------------------------
+        # ── Serialize ────────────────────────────────────────────────────
         results = [
             {
+                "id":            emp.id,
                 "emp_id":        emp.employee_id,
                 "first_name":    emp.first_name,
                 "middle_name":   emp.middle_name,
                 "last_name":     emp.last_name,
                 "mobile_number": emp.mobile_number,
+                "status":        emp.is_active,
                 "periods":       periods_by_user.get(emp.id, []),
             }
-            for emp in employees
+            for emp in paginated_emps
         ]
 
         serializer = EmployeeSalaryAnalysisSerializer(results, many=True)
-
-        return Response(
-            {
-                "meta": {
-                    "total_employees": total_employees,
-                    "page":            page,
-                    "page_size":       page_size,
-                    "total_pages":     -(-total_employees // page_size),
-                    "applied_filters": {
-                        k: v for k, v in params.items()
-                        if k not in ("page", "page_size")
-                    },
-                },
-                "results": serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )
-
-from rest_framework.pagination import PageNumberPagination
+        response   = paginator.get_paginated_response(serializer.data)
+        response.data["summary"] = self._build_summary(all_reports)
+        return response
 
 
-# ── Pagination classes ──────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
-class AttendancePagination(PageNumberPagination):
-    page_size              = 10        # default records per page
-    page_size_query_param  = 'page_size'
-    max_page_size          = 100
-    page_query_param       = 'page'
 
-    def get_paginated_response(self, data, extra_meta=None):
-        """Extend default response with extra_meta (totals, group_by, etc.)"""
-        payload = {
-            'pagination': {
-                'total_records': self.page.paginator.count,
-                'total_pages':   self.page.paginator.num_pages,
-                'current_page':  self.page.number,
-                'page_size':     self.get_page_size(self.request),
-                'next':          self.get_next_link(),
-                'previous':      self.get_previous_link(),
-            },
-        }
-        if extra_meta:
-            payload.update(extra_meta)
-        payload['data'] = data
-        return Response(payload)
-
-# ── Main View ───────────────────────────────────────────────────────────────
-
-class AttendanceAnalysisAPIView(APIView):
+class UserAttendanceAPIView(PermissionScopeMixin, APIView):
     """
-    GET /api/attendance/analysis/
+    Retrieve attendance data for users.
 
-    Query Params:
-        -- Filters --
-        date_from, date_to, date, month, year, week
-        status_code, status_label, status_id
-        user_id, employee_id, user_type, category, city, name_search
+    Permission scoping (via PermissionScopeMixin):
+        - Superuser  → all users / all attendance
+        - Owner      → users in their hierarchy
+        - Staff/Mgr  → only themselves
 
-        -- Grouping & Ordering --
-        group_by : employee (default) | date | status | month
-        ordering : date | -date | user__first_name | status__code
+    Behavior:
+        - If `user_id` is provided → single user (no pagination).
+          Returns 404 if the requested user is outside the requester's scope.
+        - If `user_id` is not provided → paginated list of scoped users.
 
-        -- Pagination --
-        page      : page number (default 1)
-        page_size : records per page (default 10, max 100)
+    Query Parameters:
+        user_id     (int,  optional) – specific user ID
+        start_month (str,  optional) – YYYY-MM  (inclusive)
+        end_month   (str,  optional) – YYYY-MM  (inclusive)
+        page        (int,  optional) – page number
+        page_size   (int,  optional) – items per page
     """
 
+    pagination_class = api_settings.DEFAULT_PAGINATION_CLASS
 
-    # ── Scope queryset by role ──────────────────────────────────
-    def _base_queryset(self, request):
+    # ------------------------------------------------------------------
+    # Entry point
+    # ------------------------------------------------------------------
+
+    def get(self, request):
+        user_id     = request.query_params.get("user_id")
+        start_month = request.query_params.get("start_month")
+        end_month   = request.query_params.get("end_month")
+
+        if user_id:
+            return self._get_single_user(request, user_id, start_month, end_month)
+        return self._get_all_users(request, start_month, end_month)
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _get_single_user(self, request, user_id, start_month, end_month):
+        # Scope the lookup — prevents accessing users outside the requester's scope.
+        try:
+            user = self.get_user_queryset(request).get(pk=user_id)
+        except Exception:
+            return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
         qs = (
-            Attendance.objects
-            .select_related('user', 'status')
-            .only(
-                'date',
-                'user__id', 'user__employee_id',
-                'user__first_name', 'user__last_name',
-                'user__user_type', 'user__category',
-                'status__code', 'status__label',
-            )
+            self.get_attendance_queryset(request)
+            .filter(user=user)
+            .select_related("status")
         )
-        user = request.user
-        if user.user_type == 'MASTER_ADMIN':
-            return qs
-        if user.user_type == 'VSRE_OWNER':
-            return qs.filter(user__created_by=user)
-        if user.user_type in ('VSRE_MANAGER', 'LINE_MANAGER'):
-            return qs.filter(user__created_by=user)
-        return qs.filter(user=user)
+        qs = self._apply_date_filters(qs, start_month, end_month)
 
-    def get(self, request, *args, **kwargs):
-        qs = self._base_queryset(request)
+        data = {
+            "user":       user.id,
+            "attendance": self._build_attendance(qs).get(user.id, {}),
+        }
+        return Response(UserAttendanceSerializer(data).data)
 
-        # Apply filters
-        filterset = AttendanceAnalysisFilter(request.GET, queryset=qs, request=request)
-        if not filterset.is_valid():
-            return Response(filterset.errors, status=status.HTTP_400_BAD_REQUEST)
-        qs = filterset.qs
+    def _get_all_users(self, request, start_month, end_month):
+        user_qs = self.get_user_queryset(request).order_by("id")  # permission-scoped
 
-        # Apply ordering
-        ordering = request.GET.get('ordering', '-date')
-        allowed  = {'date', '-date', 'user__first_name', '-user__first_name', 'status__code', '-status__code'}
-        if ordering in allowed:
-            qs = qs.order_by(ordering)
+        paginator       = self.pagination_class()
+        paginated_users = paginator.paginate_queryset(user_qs, request, view=self)
+        paginated_ids   = [u.id for u in paginated_users]
 
-        group_by = request.GET.get('group_by', 'employee')
-        paginator = AttendancePagination()
-
-        if group_by == 'month':
-            return self._paginate_grouped(request, qs, paginator, self._group_by_month, 'month')
-        if group_by == 'date':
-            return self._paginate_grouped(request, qs, paginator, self._group_by_date, 'date')
-        if group_by == 'status':
-            return self._paginate_grouped(request, qs, paginator, self._group_by_status, 'status')
-
-        return self._paginate_grouped(request, qs, paginator, self._group_by_employee, 'employee')
-
-    # ── Pagination wrapper for grouped data ─────────────────────
-    def _paginate_grouped(self, request, qs, paginator, group_fn, group_by_label):
-        """
-        Groups the full queryset first, then paginates the grouped list.
-        This ensures page_size = N groups (employees/dates/statuses), not N raw rows.
-        """
-        grouped_list = group_fn(qs)                          # list of dicts
-        paginated    = paginator.paginate_queryset(grouped_list, request)
-        return paginator.get_paginated_response(
-            data       = paginated,
-            extra_meta = {
-                'group_by':    group_by_label,
-                'total_groups': len(grouped_list),
-            }
+        qs = (
+            self.get_attendance_queryset(request)   # permission-scoped
+            .filter(user__id__in=paginated_ids)
+            .select_related("user", "status")
         )
+        qs = self._apply_date_filters(qs, start_month, end_month)
 
-    # ── Grouping helpers ────────────────────────────────────────
+        attendance_map = self._build_attendance(qs)
 
-    def _group_by_month(self, qs) -> list:
-        """
-        Groups by YEAR-MONTH → then by each DATE inside that month.
-        Each month entry contains:
-        - year, month, month_label
-        - total_days   : distinct dates recorded
-        - status_summary : {PRESENT: N, ABSENT: N, …} across all employees for the month
-        - days         : [{ date, total, records: [{employee_id, name, status_code, status_label}] }]
-        """
-        from collections import defaultdict
-        import calendar
-
-        # month_key  → date_key → list of records
-        month_map = defaultdict(lambda: defaultdict(list))
-
-        for att in qs:
-            month_key = (att.date.year, att.date.month)   # (2025, 1)
-            date_key  = str(att.date)                      # "2025-01-15"
-            month_map[month_key][date_key].append({
-                'employee_id':  att.user.employee_id or str(att.user.id),
-                'name':         att.user.get_full_name(),
-                'status_code':  att.status.code,
-                'status_label': att.status.label,
-            })
-
-        result = []
-        for (year, month), date_map in sorted(month_map.items(), reverse=True):
-            # Build per-date list
-            days = [
-                {
-                    'date':    d,
-                    'total':   len(records),
-                    'records': records,
-                }
-                for d, records in sorted(date_map.items())
-            ]
-
-            # Aggregate status summary across the whole month
-            status_summary = defaultdict(int)
-            for day in days:
-                for rec in day['records']:
-                    status_summary[rec['status_code']] += 1
-
-            result.append({
-                'year':           year,
-                'month':          month,
-                'month_label':    calendar.month_name[month],   # "January"
-                'month_key':      f"{year}-{month:02d}",        # "2025-01"
-                'total_days':     len(days),
-                'status_summary': dict(status_summary),
-                'days':           days,
-            })
-
-        return result
-    
-    def _group_by_employee(self, qs) -> list:
-        grouped = defaultdict(lambda: {'records': [], 'summary': defaultdict(int)})
-
-        for att in qs:
-            key = att.user.employee_id or str(att.user.id)
-            grouped[key].setdefault('name', att.user.get_full_name())
-            grouped[key].setdefault('employee_id', key)
-            grouped[key]['records'].append({
-                'date':         str(att.date),
-                'status_code':  att.status.code,
-                'status_label': att.status.label,
-            })
-            grouped[key]['summary'][att.status.code] += 1
-
-        return [
+        result = [
             {
-                'employee_id':   emp_id,
-                'name':          info['name'],
-                'total_records': len(info['records']),
-                'summary':       dict(info['summary']),
-                'attendance':    info['records'],
+                "user":       user_id,
+                "attendance": attendance_map.get(user_id, {}),
             }
-            for emp_id, info in grouped.items()
+            for user_id in paginated_ids
         ]
 
-    def _group_by_date(self, qs) -> list:
-        grouped = defaultdict(list)
-        for att in qs:
-            grouped[str(att.date)].append({
-                'employee_id':  att.user.employee_id or str(att.user.id),
-                'name':         att.user.get_full_name(),
-                'status_code':  att.status.code,
-                'status_label': att.status.label,
-            })
-        return [
-            {'date': d, 'total': len(records), 'records': records}
-            for d, records in sorted(grouped.items(), reverse=True)
-        ]
+        serializer = UserAttendanceSerializer(result, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
-    def _group_by_status(self, qs) -> list:
-        grouped = defaultdict(list)
-        for att in qs:
-            grouped[att.status.code].append({
-                'date':        str(att.date),
-                'employee_id': att.user.employee_id or str(att.user.id),
-                'name':        att.user.get_full_name(),
-            })
-        return [
-            {'status_code': code, 'total': len(records), 'records': records}
-            for code, records in grouped.items()
-        ]
+    # ------------------------------------------------------------------
+    # Date filtering
+    # ------------------------------------------------------------------
+
+    def _apply_date_filters(self, qs, start_month, end_month):
+        if start_month:
+            year, month = map(int, start_month.split("-"))
+            qs = qs.filter(date__gte=f"{year}-{month:02d}-01")
+
+        if end_month:
+            year, month = map(int, end_month.split("-"))
+            last_day = calendar.monthrange(year, month)[1]
+            qs = qs.filter(date__lte=f"{year}-{month:02d}-{last_day}")
+
+        return qs
+
+    # ------------------------------------------------------------------
+    # Attendance grouping
+    # ------------------------------------------------------------------
+
+    def _build_attendance(self, qs):
+        """
+        Group queryset into:
+            { user_id -> { 'Mon-YYYY' -> { 'DD': 'P/A/H/PL/UL' } } }
+        Both months and days are sorted chronologically.
+        """
+        grouped = defaultdict(lambda: defaultdict(dict))
+
+        for record in qs:
+            month_key = record.date.strftime("%b-%Y")
+            day_key   = record.date.strftime("%d")
+            grouped[record.user_id][month_key][day_key] = self._map_status(
+                record.status.label
+            )
+
+        return {
+            user_id: {
+                month: dict(sorted(days.items()))
+                for month, days in sorted(
+                    months.items(),
+                    key=lambda x: self._month_sort_key(x[0]),
+                )
+            }
+            for user_id, months in grouped.items()
+        }
+
+    @staticmethod
+    def _map_status(label: str) -> str:
+        mapping = {
+            "Present":      "P",
+            "Absent":       "A",
+            "Half Day":     "H",
+            "Paid Leave":   "PL",
+            "Unpaid Leave": "UL",
+        }
+        return mapping.get(label, label[0].upper() if label else "?")
+
+    @staticmethod
+    def _month_sort_key(month_str: str):
+        from datetime import datetime
+        return datetime.strptime(month_str, "%b-%Y")

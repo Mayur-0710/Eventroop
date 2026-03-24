@@ -73,7 +73,7 @@ class AttendanceCalculator:
         )
 
         payable_days = agg["present"] + agg["paid_leave"] + Decimal("0.5") * agg["half_day"]
-
+        
         return {
             "present_days": agg["present"],
             "absent_days": agg["absent"],

@@ -28,12 +28,12 @@ def update_attendance_report(user, attendance_date):
     try:
         period_type = get_period_type(user, attendance_date)
         calculator = AttendanceCalculator(user, base_date=attendance_date)
-        
+
         report = calculator.get_attendance_report(
             base_date=attendance_date,
             period_type=period_type
         )
-        
+
         if report:
             AttendanceReport.objects.update_or_create(
                 user=user,
@@ -57,42 +57,13 @@ def update_attendance_report(user, attendance_date):
         return None
 
 
-def update_salary_report(user, period_start, period_end, period_type):
-    """Extract common salary report update logic."""
+def refresh_all_salary_reports(user):
+    """Trigger a full recalculation of all salary reports for the user."""
     try:
-        calculator = SalaryCalculator(user=user, base_date=period_end)
-        
-        payroll_data = calculator.calculate_payroll(
-            base_date=period_end,
-            period_type=period_type
-        )
-
-        total_payable_amount = Decimal(str(payroll_data.get("current_payment", 0)))
-        daily_rate = Decimal(str(payroll_data.get("daily_rate", 0)))
-
-        # Check if already paid
-        existing_report = SalaryReport.objects.filter(
-            user=user,
-            start_date=period_start,
-            end_date=period_end
-        ).first()
-        
-        remaining_payment = 0 
-        if existing_report: 
-            remaining_payment = existing_report.total_payable_amount - existing_report.paid_amount
-        
-        instance, created = SalaryReport.objects.update_or_create(
-            user=user,
-            start_date=period_start,
-            end_date=period_end,
-            defaults={
-                "total_payable_amount": total_payable_amount,
-                "daily_rate": daily_rate,
-                "remaining_payment": remaining_payment
-            }
-        )
+        calculator = SalaryCalculator(user=user)
+        calculator.refresh_salary_reports()
     except Exception as e:
-        print(f"Error updating salary report: {e}")
+        print(f"Error refreshing salary reports: {e}")
 
 
 def clear_cache(user_id):
@@ -106,26 +77,12 @@ def update_attendance_report_on_save(sender, instance, created, **kwargs):
     """When attendance is created or updated, recalculate and save the report."""
     user = instance.user
     attendance_date = instance.date
-    
-    report = update_attendance_report(user, attendance_date)
-    
-    if report:
-        update_salary_report(
-            user=user,
-            period_start=report["start_date"],
-            period_end=report["end_date"],
-            period_type=report["period_type"]
-        )
-    
+
+    update_attendance_report(user, attendance_date)
     clear_cache(user.id)
 
 
 @receiver(post_save, sender=AttendanceReport)
 def create_or_update_salary_report_on_attendance(sender, instance, created, **kwargs):
-    """Auto-create or update SalaryReport when AttendanceReport changes."""
-    update_salary_report(
-        user=instance.user,
-        period_start=instance.start_date,
-        period_end=instance.end_date,
-        period_type=instance.period_type
-    )
+    """Auto-recalculate ALL salary reports when any AttendanceReport changes."""
+    refresh_all_salary_reports(instance.user)

@@ -1,8 +1,6 @@
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-import django_filters
-from attendance.models import Attendance, AttendanceStatus
 from django.db.models import Q
 
 
@@ -252,39 +250,3 @@ def build_sort(params: dict) -> tuple[list[str], list[str]]:
 
     return order_by, errors
 
-
-class AttendanceAnalysisFilter(django_filters.FilterSet):
-    # ── Date range ──────────────────────────────────────────────
-    date_from   = django_filters.DateFilter(field_name='date', lookup_expr='gte')
-    date_to     = django_filters.DateFilter(field_name='date', lookup_expr='lte')
-    date        = django_filters.DateFilter(field_name='date', lookup_expr='exact')
-    month       = django_filters.NumberFilter(field_name='date', lookup_expr='month')
-    year        = django_filters.NumberFilter(field_name='date', lookup_expr='year')
-    week        = django_filters.NumberFilter(field_name='date', lookup_expr='week')
-
-    # ── Status filters ──────────────────────────────────────────
-    status_code  = django_filters.CharFilter(field_name='status__code',  lookup_expr='iexact')
-    status_label = django_filters.CharFilter(field_name='status__label', lookup_expr='icontains')
-    status_id    = django_filters.NumberFilter(field_name='status__id')
-
-    # ── Employee filters ────────────────────────────────────────
-    user_id       = django_filters.NumberFilter(field_name='user__id')
-    employee_id   = django_filters.CharFilter(field_name='user__employee_id', lookup_expr='iexact')
-    user_type     = django_filters.CharFilter(field_name='user__user_type',   lookup_expr='iexact')
-    category      = django_filters.CharFilter(field_name='user__category',    lookup_expr='iexact')
-    city          = django_filters.CharFilter(field_name='user__city',        lookup_expr='icontains')
-    name_search   = django_filters.CharFilter(method='filter_by_name')
-
-    def filter_by_name(self, qs, name, value):
-        return qs.filter(
-            Q(user__first_name__icontains=value) |
-            Q(user__last_name__icontains=value)
-        )
-
-    class Meta:
-        model  = Attendance
-        fields = [
-            'date_from', 'date_to', 'date', 'month', 'year', 'week',
-            'status_code', 'status_label', 'status_id',
-            'user_id', 'employee_id', 'user_type', 'category', 'city', 'name_search',
-        ]

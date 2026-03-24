@@ -318,8 +318,8 @@ class OrderViewSet(viewsets.ModelViewSet):
     filterset_fields = {
         'patient': ['exact'],
         'package': ['exact'],
-        'start_datetime': ['month'],
-        'end_datetime': ['month'],
+        'start_datetime': ['gte'],
+        'end_datetime': ['lte'],
         'booking_type': ['exact'],
         'status': ['exact'],
     }

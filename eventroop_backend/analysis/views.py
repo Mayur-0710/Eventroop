@@ -37,12 +37,58 @@ _ZERO_FIELD = Value(
 
 class SalaryAnalysisAPIView(PermissionScopeMixin, APIView):
     """
-    Returns paginated salary analysis per employee, with a summary block.
+    Returns paginated salary analysis per employee with period-wise breakdown.
 
+    Query Params:
+    - Employee filters:
+        user_id, user_type, emp_id, emp_id__icontains,
+        first_name__icontains, last_name__icontains,
+        mobile_number, search, status (active|inactive|all)
+
+    - Period filters:
+        start_date, start_date__gte, start_date__lte,
+        end_date, end_date__gte, end_date__lte,
+        days_present__gte/lte, days_absent__gte/lte,
+        salary__gte/lte, total_salary__gte/lte,
+        amount_paid__gte/lte
+
+    - Sorting:
+        sort_by (comma-separated), sort_dir (asc|desc)
+
+    Computed:
+    - total_unpaid_days = absent + unpaid_leaves + (0.5 * half_days)
+    - excess_balance = paid_amount - total_payable_amount
+
+    Returns:
+    - Paginated employees with nested periods + summary
+    
     Permission scoping (via PermissionScopeMixin):
         - Superuser  → all employees
         - Owner      → employees in their hierarchy
         - Staff/Mgr  → only themselves
+
+    Returns paginated salary analysis per employee with period-wise breakdown.
+
+    Features:
+    - Employee + period level filtering
+    - Sorting support
+    - Attendance & salary annotations
+    - Summary of totals and attendance
+
+    Computed fields:
+    - total_payable_days: from AttendanceReport
+    - total_unpaid_days: absent + unpaid_leaves + (0.5 * half_days)
+    - salary: latest from SalaryStructure
+    - excess_balance: paid_amount - total_payable_amount
+
+    Permissions:
+    - Superuser: all employees
+    - Owner: hierarchy employees
+    - Others: self only
+
+    Response:
+    - Paginated employees with nested periods
+    - Includes overall summary block
     """
 
     pagination_class = api_settings.DEFAULT_PAGINATION_CLASS
@@ -206,14 +252,13 @@ class SalaryAnalysisAPIView(PermissionScopeMixin, APIView):
 
         for report in all_reports:
             calendar_days = (report.end_date - report.start_date).days + 1
+            attendance_pct = round((report.total_payable_days / calendar_days) * 100, 2)
             periods_by_user[report.user_id].append(
                 {
                     "start_date":         report.start_date,
                     "end_date":           report.end_date,
                     "calendar_days":      calendar_days,
-                    "attendance_pct":     round(
-                        (report.total_payable_days / calendar_days) * 100, 2
-                    ),
+                    "attendance_pct":     attendance_pct,
                     "total_payable_days": report.total_payable_days,
                     "total_unpaid_days":  report.total_unpaid_days,
                     "salary":             report.salary,
@@ -244,10 +289,6 @@ class SalaryAnalysisAPIView(PermissionScopeMixin, APIView):
         response.data["summary"] = self._build_summary(all_reports)
         return response
 
-
-# ---------------------------------------------------------------------------
-
-
 class UserAttendanceAPIView(PermissionScopeMixin, APIView):
     """
     Retrieve attendance data for users.
@@ -263,11 +304,11 @@ class UserAttendanceAPIView(PermissionScopeMixin, APIView):
         - If `user_id` is not provided → paginated list of scoped users.
 
     Query Parameters:
-        user_id     (int,  optional) – specific user ID
-        start_month (str,  optional) – YYYY-MM  (inclusive)
-        end_month   (str,  optional) – YYYY-MM  (inclusive)
-        page        (int,  optional) – page number
-        page_size   (int,  optional) – items per page
+        user_id     (int,  optional) - specific user ID
+        start_month (str,  optional) - YYYY-MM  (inclusive)
+        end_month   (str,  optional) - YYYY-MM  (inclusive)
+        page        (int,  optional) - page number
+        page_size   (int,  optional) - items per page
     """
 
     pagination_class = api_settings.DEFAULT_PAGINATION_CLASS
@@ -397,3 +438,5 @@ class UserAttendanceAPIView(PermissionScopeMixin, APIView):
     def _month_sort_key(month_str: str):
         from datetime import datetime
         return datetime.strptime(month_str, "%b-%Y")
+    
+    

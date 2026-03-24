@@ -23,7 +23,6 @@ class PermissionScopeMixin:
         user = request.user
         base_qs = CustomUser.objects.filter(
             user_type__in=self.ALLOWED_USER_TYPES,
-            is_deleted=False,
         )
 
         if user.is_superuser:

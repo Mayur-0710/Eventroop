@@ -31,7 +31,6 @@ ALLOWED_PERIOD_SORT_FIELDS = {
     "payment_date":   "payment_date",    # annotated
 }
 
-ALLOWED_TRANSACTION_STATUSES = ["PENDING", "PROCESSING", "SUCCESS", "FAILED", "CANCELLED"]
 ALLOWED_USER_TYPES            = ["VSRE_MANAGER", "LINE_MANAGER", "VSRE_STAFF"]
 
 
@@ -124,6 +123,15 @@ def build_employee_filters(params: dict) -> tuple[Q, list[str]]:
             | Q(mobile_number__icontains=search)
         )
 
+    # --- Status filter ---
+    if status := params.get("status").strip().lower():
+        if status == "active":
+            q &= Q(is_active=True)
+        elif status == "inactive":
+            q &= Q(is_active=False)
+        else:
+            errors["status"] = f"Invalid value '{status}'. Must be one of: active, inactive"
+
     return q, errors
 
 
@@ -196,13 +204,6 @@ def build_period_filters(params: dict) -> tuple[Q, list[str]]:
                 q &= Q(**{lookup: _parse_decimal(val, param)})
             except ValueError as e:
                 errors.append(str(e))
-
-    # --- status ---
-    if st := params.get("status"):
-        if st not in ALLOWED_TRANSACTION_STATUSES:
-            errors.append(f"'status' must be one of {ALLOWED_TRANSACTION_STATUSES}.")
-        else:
-            q &= Q(tx_status=st)
 
     return q, errors
 

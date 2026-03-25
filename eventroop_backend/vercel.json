@@ -1,0 +1,18 @@
+{
+    "builds": [
+        {
+            "src": "eventroop_backend/wsgi.py",
+            "use": "@vercel/python",
+            "config": {
+                "maxLambdaSize": "15mb",
+                "runtime": "python3.11"
+            }
+        }
+    ],
+    "routes": [
+        {
+            "src": "/(.*)",
+            "dest": "eventroop_backend/wsgi.py"
+        }
+    ]
+}

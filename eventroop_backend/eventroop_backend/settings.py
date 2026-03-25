@@ -95,7 +95,8 @@ WSGI_APPLICATION = 'eventroop_backend.wsgi.application'
 ASGI_APPLICATION = "eventroop_backend.asgi.application"
 
 # ----------------- Notification, Redis, Celery and channel -----------------
-REDIS_URL = os.getenv("REDIS_URL","redis://127.0.0.1:6379/0" )
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
+
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
@@ -106,11 +107,14 @@ CHANNEL_LAYERS = {
 }
 
 CELERY_BROKER_URL = REDIS_URL
-# TODO: currenly working on 1 cpu because db is free version, Update later
+CELERY_RESULT_BACKEND = REDIS_URL
+
+# TODO: currently working on 1 cpu because db is free version, Update later
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
-CELERY_WORKER_POOL = 'solo'
-CELERY_WORKER_CONCURRENCY = 1 
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_WORKER_POOL = "solo"
+CELERY_WORKER_CONCURRENCY = 1
 
 PUSH_NOTIFICATIONS_SETTINGS = {
     'FCM_API_KEY': 'your-firebase-key',   # Android

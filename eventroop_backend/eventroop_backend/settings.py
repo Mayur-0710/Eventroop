@@ -72,7 +72,6 @@ CORS_ALLOW_ALL_ORIGINS = True
 CSRF_TRUSTED_ORIGINS = [
     "redis://127.0.0.1:6379",
     "http://localhost",
-    "http://13.127.228.154",
     "http://127.0.0.1",
     "http://localhost:5173",
     "https://*.vercel.app",
@@ -97,23 +96,31 @@ ASGI_APPLICATION = "eventroop_backend.asgi.application"
 # ----------------- Notification, Redis, Celery and channel -----------------
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
 
+# Separate DBs to avoid key collisions
+REDIS_CACHE_URL    = f"{REDIS_URL}/0"
+REDIS_BROKER_URL   = f"{REDIS_URL}/1"
+REDIS_RESULTS_URL  = f"{REDIS_URL}/2"
+REDIS_CHANNELS_URL = f"{REDIS_URL}/3"
+
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [REDIS_URL],
+            "hosts": [REDIS_CHANNELS_URL],
         },
     },
 }
 
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_BROKER_URL     = REDIS_BROKER_URL
+CELERY_RESULT_BACKEND = REDIS_RESULTS_URL
+
+CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
 # TODO: currently working on 1 cpu because db is free version, Update later
-CELERY_ACCEPT_CONTENT = ["json"]
-CELERY_TASK_SERIALIZER = "json"
+CELERY_ACCEPT_CONTENT    = ["json"]
+CELERY_TASK_SERIALIZER   = "json"
 CELERY_RESULT_SERIALIZER = "json"
-CELERY_WORKER_POOL = "solo"
+CELERY_WORKER_POOL       = "solo"
 CELERY_WORKER_CONCURRENCY = 1
 
 PUSH_NOTIFICATIONS_SETTINGS = {

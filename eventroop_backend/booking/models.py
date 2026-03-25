@@ -798,11 +798,12 @@ class TotalInvoice(models.Model):
         ordering = ["-issued_date"]
         constraints = [
             models.CheckConstraint(
-                check=(
+                condition=(
                     models.Q(secondary_order__isnull=False, ternary_order__isnull=True) |
                     models.Q(secondary_order__isnull=True,  ternary_order__isnull=False)
                 ),
                 name="invoice_must_link_to_exactly_one_order",
+                violation_error_message="Invoice must link to exactly one order (secondary or ternary, not both or neither).",
             ),
         ]
         indexes = [

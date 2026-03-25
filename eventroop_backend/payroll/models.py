@@ -255,7 +255,7 @@ class SalaryTransaction(models.Model):
         ordering = ["-created_at"]
         constraints = [
             models.CheckConstraint(
-                check=Q(amount_paid__gte=0),
+                condition=Q(amount_paid__gte=0),
                 name="amount_paid_non_negative",
             ),
         ]

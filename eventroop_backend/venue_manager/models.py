@@ -2,9 +2,10 @@ from django.db import models
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.fields import GenericRelation
-
+ 
 from accounts.models import CustomUser
 from booking.models import Location,Package
+from booking.constants import BookingType
 
 # ----------------------------- Photo for all -----------------------
 class Photos(models.Model):
@@ -109,7 +110,7 @@ class Service(models.Model):
     """Caterers, Decorators, Photographers, etc."""
     photos = GenericRelation(Photos, related_query_name="service_photos")
     logo = models.ImageField(upload_to="logo_image/",null=True,blank=True)
-
+    
     owner = models.ForeignKey(
         CustomUser,
         on_delete=models.CASCADE,
@@ -131,7 +132,12 @@ class Service(models.Model):
     )
       # Optional Relation
     venue = models.ManyToManyField(Venue, blank=True, related_name="services_of_venue")
-    
+    service_type = models.CharField(
+        max_length=25,
+        choices=BookingType.choices,
+        default=BookingType.OPD,
+        db_index=True,
+    )
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     address = models.TextField()
@@ -158,7 +164,7 @@ class Service(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=['owner', 'is_active']),
-            # models.Index(fields=['service_type']),
+            models.Index(fields=['service_type']),
         ]
 
 # ----------------------------- Resource -----------------------

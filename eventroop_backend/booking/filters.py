@@ -11,6 +11,7 @@ class EntityFilter(filters.FilterSet):
 
     # Common filters
     search = filters.CharFilter(method="filter_search")
+    service_type = filters.CharFilter(field_name="service_type", lookup_expr="iexact")  
     city = filters.CharFilter(field_name="city", lookup_expr="iexact")
     owner = filters.NumberFilter(field_name="owner__id")
     manager = filters.NumberFilter(method="filter_manager")
@@ -34,7 +35,7 @@ class EntityFilter(filters.FilterSet):
     # Venue capacity filters
     min_capacity = filters.NumberFilter(method="filter_min_capacity")
     max_capacity = filters.NumberFilter(method="filter_max_capacity")
-
+    
     class Meta:
         fields = []
     

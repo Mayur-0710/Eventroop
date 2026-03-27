@@ -892,6 +892,8 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
     search_fields = ['invoice_number', 'patient__first_name', 'patient__last_name', 'status']
     filterset_fields = {
         'patient': ['exact'],
+        'period_start': ['gte'],
+        'period_end': ['lte'],
         'secondary_order__primary_order__booking_type': ['exact'],
         'ternary_order__booking_type': ['exact'],
         'status': ['exact'],
@@ -911,38 +913,6 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
         # Filter by customer
         if user.is_customer:
             queryset = queryset.filter(Q(patient__registered_by=user)|Q(user=user))
-
-        months_param = self.request.query_params.get('filter_months', None)
-
-        if months_param:
-            try:
-                months = int(months_param)
-
-                now = timezone.localtime()  # aware
-                today = now.date()
-
-                start_date = today - relativedelta(months=months)
-
-                # Start of that day (00:00:00)
-                start_datetime = timezone.make_aware(
-                    datetime.combine(start_date, time.min),
-                    timezone.get_current_timezone()
-                )
-
-                # End of that day (00:00:00)
-                end_datetime = timezone.make_aware(
-                    datetime.combine(today, time.max),
-                    timezone.get_current_timezone()
-                )
-
-                queryset = queryset.filter(
-                    period_start__gte=start_datetime,
-                    # period_end__lte=end_datetime
-                    
-                )
-
-            except (ValueError, TypeError):
-                pass
     
         return queryset
     

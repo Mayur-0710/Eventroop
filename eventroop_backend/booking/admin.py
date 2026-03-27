@@ -135,7 +135,7 @@ class PrimaryOrderAdmin(admin.ModelAdmin):
             "fields": (
                 "booking_entity", "user", "patient",
                 "venue", "service", "package",
-                "booking_type", "auto_continue",
+                "booking_type", "auto_continue","client_address"
             ),
         }),
         ("Schedule", {
@@ -280,7 +280,7 @@ class TernaryOrderAdmin(admin.ModelAdmin):
             "fields": ("order_id", "secondary_order"),
         }),
         ("Service / Package", {
-            "fields": ("service", "package", "booking_entity", "booking_type"),
+            "fields": ("service", "package", "booking_entity", "booking_type","client_address"),
         }),
         ("Schedule", {
             "fields": ("start_datetime", "end_datetime"),

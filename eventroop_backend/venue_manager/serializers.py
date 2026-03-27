@@ -4,10 +4,7 @@ from django.db import transaction
 from .models import *
 from accounts.models import CustomUser
 
-
-# --------------------------------------------------------
-# PHOTO SERIALIZER
-# --------------------------------------------------------
+# --------- PHOTO SERIALIZER -----------------------------------------------
 class PhotosSerializer(serializers.ModelSerializer):
     class Meta:
         model = Photos
@@ -33,10 +30,7 @@ class LocationMiniSerializer(serializers.ModelSerializer):
             "location_type"
         ]
 
-
-# --------------------------------------------------------
-# VENUE SERIALIZER
-# --------------------------------------------------------
+# --------- VENUE SERIALIZER -----------------------------------------------
 class VenueSerializer(serializers.ModelSerializer):
     photos = PhotosSerializer(many=True, read_only=True)
     owner = UserMiniSerializer(read_only=True)
@@ -186,9 +180,7 @@ class VenueDropdownSerializer(serializers.ModelSerializer):
             "locality",
         ]
 
-# --------------------------------------------------------
-# SERVICE SERIALIZER
-# --------------------------------------------------------
+# --------- SERVICE SERIALIZER ---------------------------------------------
 class ServiceSerializer(serializers.ModelSerializer):
     photos = PhotosSerializer(many=True, read_only=True)
     owner = UserMiniSerializer(read_only=True)
@@ -200,7 +192,7 @@ class ServiceSerializer(serializers.ModelSerializer):
         fields = [
             "id", "owner", "manager", "staff", "venue",
             "name", "description", "address","city",
-            "contact","website", "tags", "quick_info",
+            "contact","website","service_type", "tags", "quick_info",
             "is_active", "is_deleted",
             "created_at", "updated_at",
             "photos","logo"

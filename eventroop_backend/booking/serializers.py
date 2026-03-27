@@ -81,6 +81,10 @@ class PackageCreateSerializer(serializers.ModelSerializer):
             "object_id",
             "belongs_to_type",
         ]
+        read_only_fields=[
+            "package_type"
+        ]
+
 
     def validate(self, attrs):
         model_name = attrs.pop("belongs_to_type", None)
@@ -148,6 +152,7 @@ class TernaryOrderCreateSerializer(serializers.ModelSerializer):
             'venue',
             'service',
             'package',
+            'client_address',
             'start_datetime',
             'end_datetime',
             'discount_amount',
@@ -157,6 +162,8 @@ class TernaryOrderCreateSerializer(serializers.ModelSerializer):
             'venue': {'required': True},
             'service': {'required': True},
             'package': {'required': True},
+            'client_address':  {'required': False},
+
         }
 
     def validate(self, attrs):
@@ -229,6 +236,7 @@ class TernaryOrderSerializer(serializers.ModelSerializer):
             'package',
             'package_name',
             'location_locality',
+            'client_address',
             'start_datetime',
             'end_datetime',
             'discount_amount',
@@ -326,6 +334,7 @@ class PrimaryOrderSerializer(serializers.ModelSerializer):
             'service_name',
             'package',
             'package_name',
+            'client_address',
             # financials
             'total_bill',
             # dates
@@ -393,6 +402,7 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
             'service',
             'package',
             'booking_type',
+            'client_address',
             'start_datetime',
             'end_datetime',
             'discount_amount',
@@ -405,6 +415,7 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
             'venue':           {'required': False},
             'start_datetime':  {'required': False},
             'end_datetime':    {'required': False},
+            'client_address':  {'required': False},
             'discount_amount':  {'required': False},
             'premium_amount':    {'required': False},
         }

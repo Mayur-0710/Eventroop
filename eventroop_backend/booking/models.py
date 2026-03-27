@@ -108,6 +108,12 @@ class Package(models.Model):
             models.Index(fields=['owner', '-created_at']),
         ]
 
+    def save(self, *args, **kwargs):
+        if self.content_type and self.content_type.model == "service":
+            self.package_type = self.belongs_to.service_type
+
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.name} ({self.package_type})"
 
@@ -299,6 +305,7 @@ class PrimaryOrder(models.Model):
     package = models.ForeignKey(
         Package, on_delete=models.CASCADE, related_name="primary_orders"
     )
+    client_address = models.TextField(null=True,blank=True)
 
     start_datetime = models.DateTimeField(db_index=True)
     end_datetime = models.DateTimeField(db_index=True)
@@ -694,7 +701,8 @@ class TernaryOrder(models.Model):
         default=BookingType.OPD,
         db_index=True,
     )
-
+    client_address = models.TextField(null=True,blank=True)
+    
     start_datetime = models.DateTimeField(db_index=True)
     end_datetime = models.DateTimeField(db_index=True)
 

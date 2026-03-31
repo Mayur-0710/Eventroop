@@ -398,7 +398,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             }
         """
         raw_dates = request.data.get('dates')
-        
+        print(f"raw_dates:{raw_dates}")
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -835,6 +835,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         Parse and validate dates for DAILY and HOURLY packages.
         Returns parsed data or raises ValidationError.
         """
+        
         if period_type == PeriodChoices.DAILY:
 
             if not isinstance(raw_dates, list):
@@ -866,7 +867,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                     {"dates": "Invalid date or time format. Use YYYY-MM-DD and HH:MM:SS."}
                 )
         else:
-            return None
+            raise ValidationError(
+                {"package": f"Unsupported period type: {period_type}"}
+            )
 
 class TotalInvoiceViewSet(viewsets.ModelViewSet):
     """

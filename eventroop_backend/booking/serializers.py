@@ -84,6 +84,9 @@ class PackageCreateSerializer(serializers.ModelSerializer):
         read_only_fields=[
             "package_type"
         ]
+        extra_kwargs = {
+            'period': {'required': True},
+        }
 
 
     def validate(self, attrs):

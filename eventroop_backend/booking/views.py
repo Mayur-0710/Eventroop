@@ -412,15 +412,17 @@ class OrderViewSet(viewsets.ModelViewSet):
         primary_order = serializer.save()
             
         # ── Decide generation mode ────────────────────────────────────────────
+        try:
+            if raw_dates:
+                # Mode 2: specific dates / slots
+                parsed = self.parse_dates(primary_order.package.period,raw_dates)
+                primary_order.generate_secondary_from_random_dates(parsed)
+            else:
+                # Mode 1: full range (start_datetime + end_datetime required by serializer)
+                primary_order.generate_secondary_full_range_dates()
+        except ValidationError as e:
+            return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
         
-        if raw_dates:
-            # Mode 2: specific dates / slots
-            parsed = self.parse_dates(primary_order.package.period,raw_dates)
-            primary_order.generate_secondary_from_random_dates(parsed)
-        else:
-            # Mode 1: full range (start_datetime + end_datetime required by serializer)
-            primary_order.generate_secondary_full_range_dates()
-
         response_serializer = PrimaryOrderSerializer(primary_order)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
     
@@ -462,13 +464,14 @@ class OrderViewSet(viewsets.ModelViewSet):
 
             # Delete old secondary orders
             primary_order.secondary_orders.all().delete()
-
-            if raw_dates:
-                parsed = self.parse_dates(primary_order.package.period, raw_dates)
-                primary_order.generate_secondary_from_random_dates(parsed)
-            else:
-                primary_order.generate_secondary_full_range_dates()
-
+            try:
+                if raw_dates:
+                    parsed = self.parse_dates(primary_order.package.period, raw_dates)
+                    primary_order.generate_secondary_from_random_dates(parsed)
+                else:
+                    primary_order.generate_secondary_full_range_dates()
+            except ValidationError as e:
+                return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
         response_serializer = PrimaryOrderSerializer(primary_order)
 
         return Response(response_serializer.data, status=status.HTTP_200_OK)
@@ -570,24 +573,26 @@ class OrderViewSet(viewsets.ModelViewSet):
         try:
             # MODE 2 — Specific Dates / Slots
             if raw_dates:
+                try:
+                    parsed = self.parse_dates(period_type, raw_dates)
 
-                parsed = self.parse_dates(period_type, raw_dates)
-
-                if isinstance(parsed, list):  # DAILY
-                    new_start = timezone.make_aware(
-                        datetime.combine(min(parsed), time.min)
-                    )
-                    new_end = timezone.make_aware(
-                        datetime.combine(max(parsed), time.max)
-                    )
-                else:  # HOURLY
-                    all_dates = list(parsed.keys())
-                    new_start = timezone.make_aware(
-                        datetime.combine(min(all_dates), time.min)
-                    )
-                    new_end = timezone.make_aware(
-                        datetime.combine(max(all_dates), time.max)
-                    )
+                    if isinstance(parsed, list):  # DAILY
+                        new_start = timezone.make_aware(
+                            datetime.combine(min(parsed), time.min)
+                        )
+                        new_end = timezone.make_aware(
+                            datetime.combine(max(parsed), time.max)
+                        )
+                    else:  # HOURLY
+                        all_dates = list(parsed.keys())
+                        new_start = timezone.make_aware(
+                            datetime.combine(min(all_dates), time.min)
+                        )
+                        new_end = timezone.make_aware(
+                            datetime.combine(max(all_dates), time.max)
+                        )
+                except ValidationError as e:
+                    return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
 
                 primary_order.reschedule(
                     new_start,

@@ -485,10 +485,6 @@ class PaymentMasterViewSet(viewsets.ViewSet):
         except Exception as e:
             raise ValidationError(f"An unexpected error occurred: {str(e)}")
 
-    # -------------------------
-    # SAME METHODS (unchanged)
-    # -------------------------
-
     def _parse_filters(self, request):
         current_year = date.today().year
 
@@ -692,10 +688,6 @@ class PaymentMasterViewSet(viewsets.ViewSet):
         except Exception as e:
             raise ValidationError(f"An unexpected error occurred: {str(e)}")
 
-    # -------------------------
-    # DAILY COLLECTION HELPERS
-    # -------------------------
-
     def _parse_daily_filters(self, request):
         """
         Both year and month are REQUIRED for day-level granularity.
@@ -711,8 +703,6 @@ class PaymentMasterViewSet(viewsets.ViewSet):
             raise ValidationError("month must be a valid integer between 1 and 12.")
 
         return year, month
-
-    
 
     def _fetch_daily_collection_map(self, year, month):
         """

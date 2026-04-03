@@ -1,5 +1,4 @@
 import calendar
-from calendar import month_abbr
 from collections import defaultdict
 from decimal import Decimal
 from datetime import date
@@ -11,7 +10,9 @@ from django.db.models import (
     OuterRef,
     Subquery,
     Value,
-    Count, Sum, Q,Min,Max
+    Count,
+    Sum,
+    Q
 )
 from django.db.models.functions import Coalesce,TruncMonth,TruncDay
 from rest_framework import status,viewsets
@@ -23,7 +24,7 @@ from rest_framework.exceptions import ValidationError
 
 from attendance.models import  AttendanceReport
 from payroll.models import SalaryReport, SalaryStructure
-from booking.models import SecondaryOrder,TernaryOrder, TotalInvoice,Payment
+from booking.models import SecondaryOrder,TernaryOrder, TotalInvoice,Payment,PaymentMethod
 
 from .filters import (
     ALLOWED_EMPLOYEE_SORT_FIELDS,
@@ -35,8 +36,6 @@ from .mixins import PermissionScopeMixin
 from .serializers import (
     EmployeeSalaryAnalysisSerializer,
     UserAttendanceSerializer,
-    MonthlyAnalyticsRowSerializer,
-    MonthlyAnalyticsSummarySerializer,
     MonthlyAnalyticsResponseSerializer,
     )
 
@@ -47,7 +46,6 @@ _ZERO_FIELD = Value(
     Decimal("0.00"),
     output_field=DecimalField(max_digits=12, decimal_places=2),
 )
-
 
 class SalaryAnalysisAPIView(PermissionScopeMixin, APIView):
     """
@@ -457,126 +455,117 @@ class PaymentMasterViewSet(viewsets.ViewSet):
     """
     ViewSet for monthly performance across invoices, bookings, and payments.
 
-    Endpoint:
+    Endpoints:
         GET /api/month-wise-performance/
         GET /api/month-wise-performance/?year=2024&month=3
+        GET /api/daily-collection/?year=2025&month=3
+        GET /api/payment-mode-analytics/?year=2025&month=12
     """
 
-    @action(detail=False, methods=["get"],url_path='month-wise-performance')
-    def month_wise_performance(self, request):
-        try:
-            year, month = self._parse_filters(request)
-            monthly_data = self._fetch_monthly_data(year, month)
-            rows = self._build_rows(monthly_data)
-            summary = self._build_summary(rows)
+    DIGITAL_METHODS = {PaymentMethod.UPI, PaymentMethod.CARD, PaymentMethod.BANK}
+    CASH_METHODS    = {PaymentMethod.CASH}
+    CHEQUE_METHODS  = {PaymentMethod.CHEQUE}
 
-            response_data = {
-                "year": year,
-                "month": month,
-                "rows": rows,
-                "summary": summary
-            }
-
-            serializer = MonthlyAnalyticsResponseSerializer(response_data)
-            return Response(serializer.data)
-
-        except ValidationError:
-            raise
-        except Exception as e:
-            raise ValidationError(f"An unexpected error occurred: {str(e)}")
+    # ── Filter parsers ─────────────────────────────────────────────────────────
 
     def _parse_filters(self, request):
-        current_year = date.today().year
-
-        year_param = request.query_params.get("year")
+        """Parse optional year/month query params. Month=0 means all months."""
+        year_param  = request.query_params.get("year")
         month_param = request.query_params.get("month")
 
-        year = int(year_param) if year_param else current_year
+        year = int(year_param) if year_param else date.today().year
 
         if month_param:
             try:
                 month = int(month_param)
-                if month < 1 or month > 12:
-                    raise ValidationError("Month must be between 1 and 12")
             except ValueError:
-                raise ValidationError("Month must be a valid integer between 1 and 12")
+                raise ValidationError("Month must be a valid integer between 1 and 12.")
+            if not 1 <= month <= 12:
+                raise ValidationError("Month must be between 1 and 12.")
         else:
             month = 0
 
         return year, month
 
-    def _fetch_monthly_data(self, year, month):
-        invoice_data = self._fetch_invoice_data(year, month)
-        secondary_bookings = self._fetch_secondary_bookings(year, month)
-        ternary_bookings = self._fetch_ternary_bookings(year, month)
-        payment_data = self._fetch_payment_data(year, month)
+    def _parse_daily_filters(self, request):
+        """Parse required year/month for day-level granularity."""
+        try:
+            year  = int(request.query_params.get("year",  date.today().year))
+            month = int(request.query_params.get("month", date.today().month))
+        except ValueError:
+            raise ValidationError("Year and month must be valid integers.")
 
-        return self._merge_monthly_data(
-            invoice_data,
-            secondary_bookings,
-            ternary_bookings,
-            payment_data
-        )
+        if not 1 <= month <= 12:
+            raise ValidationError("Month must be between 1 and 12.")
+
+        return year, month
+
+    # ── Shared queryset helper ─────────────────────────────────────────────────
+
+    def _base_payment_qs(self, year, month):
+        qs = Payment.objects.filter(paid_date__year=year)
+        if month:
+            qs = qs.filter(paid_date__month=month)
+        return qs
+
+    # ── month-wise-performance ─────────────────────────────────────────────────
+    @action(detail=False, methods=["get"], url_path="month-wise-performance")
+    def month_wise_performance(self, request):
+        try:
+            year, month   = self._parse_filters(request)
+            monthly_data  = self._fetch_monthly_data(year, month)
+            rows          = self._build_rows(monthly_data)
+            response_data = {
+                "year":    year,
+                "month":   month,
+                "rows":    rows,
+                "summary": self._build_summary(rows),
+            }
+            return Response(MonthlyAnalyticsResponseSerializer(response_data).data)
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise ValidationError(f"An unexpected error occurred: {e}")
+
+    def _fetch_monthly_data(self, year, month):
+        invoice_data       = self._fetch_invoice_data(year, month)
+        secondary_bookings = self._fetch_order_bookings(SecondaryOrder, year, month)
+        ternary_bookings   = self._fetch_order_bookings(TernaryOrder,   year, month)
+        payment_data       = self._fetch_payment_data(year, month)
+        return self._merge_monthly_data(invoice_data, secondary_bookings, ternary_bookings, payment_data)
 
     def _fetch_invoice_data(self, year, month):
-        queryset = TotalInvoice.objects.filter(period_start__year=year)
-
-        if month != 0:
-            queryset = queryset.filter(period_start__month=month)
-
+        qs = TotalInvoice.objects.filter(period_start__year=year)
+        if month:
+            qs = qs.filter(period_start__month=month)
         return (
-            queryset
+            qs
             .annotate(month=TruncMonth("period_start"))
             .values("month")
             .annotate(
-                invoice_value=Sum("total_amount", default=Decimal("0.00")),
-                pending_invoices=Count("id", filter=~Q(status="PAID")),
-                total_invoices=Count("id"),
+                invoice_value    = Sum("total_amount", default=ZERO),
+                pending_invoices = Count("id", filter=~Q(status="PAID")),
+                total_invoices   = Count("id"),
             )
             .order_by("month")
         )
 
     def _fetch_payment_data(self, year, month):
-        queryset = Payment.objects.filter(
-            is_verified=True,
-            paid_date__year=year
-        )
-
-        if month != 0:
-            queryset = queryset.filter(paid_date__month=month)
-
         return (
-            queryset
+            self._base_payment_qs(year, month)
             .annotate(month=TruncMonth("paid_date"))
             .values("month")
-            .annotate(
-                amt_collected=Sum("amount", default=Decimal("0.00"))
-            )
+            .annotate(amt_collected=Sum("amount", default=ZERO))
             .order_by("month")
         )
 
-    def _fetch_secondary_bookings(self, year, month):
-        queryset = SecondaryOrder.objects.filter(start_datetime__year=year)
-
-        if month != 0:
-            queryset = queryset.filter(start_datetime__month=month)
-
+    def _fetch_order_bookings(self, model, year, month):
+        """Generic booking count fetcher for SecondaryOrder / TernaryOrder."""
+        qs = model.objects.filter(start_datetime__year=year)
+        if month:
+            qs = qs.filter(start_datetime__month=month)
         return (
-            queryset
-            .annotate(month=TruncMonth("start_datetime"))
-            .values("month")
-            .annotate(count=Count("id"))
-            .order_by("month")
-        )
-
-    def _fetch_ternary_bookings(self, year, month):
-        queryset = TernaryOrder.objects.filter(start_datetime__year=year)
-
-        if month != 0:
-            queryset = queryset.filter(start_datetime__month=month)
-
-        return (
-            queryset
+            qs
             .annotate(month=TruncMonth("start_datetime"))
             .values("month")
             .annotate(count=Count("id"))
@@ -585,156 +574,194 @@ class PaymentMasterViewSet(viewsets.ViewSet):
 
     def _merge_monthly_data(self, invoice_data, secondary_bookings, ternary_bookings, payment_data):
         monthly_map = defaultdict(lambda: {
-            "bookings": 0,
-            "invoice_value": Decimal("0.00"),
-            "amt_collected": Decimal("0.00"),
+            "bookings":        0,
+            "invoice_value":   ZERO,
+            "amt_collected":   ZERO,
             "pending_invoices": 0,
-            "total_invoices": 0,
+            "total_invoices":  0,
         })
 
         for row in invoice_data:
-            month = row["month"]
-            monthly_map[month].update({
-                "invoice_value": row["invoice_value"] or Decimal("0.00"),
+            monthly_map[row["month"]].update({
+                "invoice_value":    row["invoice_value"]    or ZERO,
                 "pending_invoices": row["pending_invoices"],
-                "total_invoices": row["total_invoices"],
+                "total_invoices":   row["total_invoices"],
             })
 
-        for row in secondary_bookings:
-            monthly_map[row["month"]]["bookings"] += row["count"]
-
-        for row in ternary_bookings:
+        for row in (*secondary_bookings, *ternary_bookings):
             monthly_map[row["month"]]["bookings"] += row["count"]
 
         for row in payment_data:
-            monthly_map[row["month"]]["amt_collected"] = (
-                row["amt_collected"] or Decimal("0.00")
-            )
+            monthly_map[row["month"]]["amt_collected"] = row["amt_collected"] or ZERO
 
         return monthly_map
 
     def _build_rows(self, monthly_data):
-        rows = []
-
-        for month in sorted(monthly_data.keys(), reverse=True):
-            rows.append(self._build_row(month, monthly_data[month]))
-
-        return rows
+        return [
+            self._build_row(month, monthly_data[month])
+            for month in sorted(monthly_data.keys(), reverse=True)
+        ]
 
     def _build_row(self, month, data):
         invoice_value = data["invoice_value"]
         amt_collected = data["amt_collected"]
-        balance = invoice_value - amt_collected
-
         return {
-            "month": month.strftime("%b'%Y") if month else "All Months",
-            "total_bookings": data["bookings"],
-            "invoice_value": str(invoice_value),
-            "amt_collected": str(amt_collected),
-            "balance": str(balance),
-            "collection_pct": self._calculate_collection_pct(amt_collected, invoice_value),
-            "pending_invoices": data["pending_invoices"],
-            "invoices_not_generated": max(data["bookings"] - data["total_invoices"], 0)
+            "month":                  month.strftime("%b'%Y") if month else "All Months",
+            "total_bookings":         data["bookings"],
+            "invoice_value":          str(invoice_value),
+            "amt_collected":          str(amt_collected),
+            "balance":                str(invoice_value - amt_collected),
+            "collection_pct":         self._collection_pct(amt_collected, invoice_value),
+            "pending_invoices":       data["pending_invoices"],
+            "invoices_not_generated": max(data["bookings"] - data["total_invoices"], 0),
         }
 
     def _build_summary(self, rows):
         if not rows:
-            return self._empty_summary()
+            return {
+                "total_bookings": 0, "total_invoice_value": "0.00",
+                "total_amt_collected": "0.00", "total_balance": "0.00",
+                "collection_pct": None, "total_pending_invoices": 0,
+                "total_invoices_not_generated": 0,
+            }
 
-        total_invoice_value = sum(Decimal(r["invoice_value"]) for r in rows)
-        total_amt_collected = sum(Decimal(r["amt_collected"]) for r in rows)
-        total_balance = sum(Decimal(r["balance"]) for r in rows)
+        total_invoice   = sum(Decimal(r["invoice_value"])  for r in rows)
+        total_collected = sum(Decimal(r["amt_collected"])   for r in rows)
 
         return {
-            "total_bookings": sum(int(r["total_bookings"]) for r in rows),
-            "total_invoice_value": str(total_invoice_value),
-            "total_amt_collected": str(total_amt_collected),
-            "total_balance": str(total_balance),
-            "collection_pct": self._calculate_collection_pct(total_amt_collected, total_invoice_value),
-            "total_pending_invoices": sum(int(r["pending_invoices"]) for r in rows),
+            "total_bookings":             sum(int(r["total_bookings"])         for r in rows),
+            "total_invoice_value":        str(total_invoice),
+            "total_amt_collected":        str(total_collected),
+            "total_balance":              str(total_invoice - total_collected),
+            "collection_pct":             self._collection_pct(total_collected, total_invoice),
+            "total_pending_invoices":     sum(int(r["pending_invoices"])       for r in rows),
             "total_invoices_not_generated": sum(int(r["invoices_not_generated"]) for r in rows),
         }
 
-    def _empty_summary(self):
-        return {
-            "total_bookings": 0,
-            "total_invoice_value": "0.00",
-            "total_amt_collected": "0.00",
-            "total_balance": "0.00",
-            "collection_pct": None,
-            "total_pending_invoices": 0,
-            "total_invoices_not_generated": 0,
-        }
+    # ── daily-collection ───────────────────────────────────────────────────────
 
-    def _calculate_collection_pct(self, collected, total):
-        if total and total > 0:
-            return round((collected / total) * 100, 1)
-        return None
-    
     @action(detail=False, methods=["get"], url_path="daily-collection")
     def daily_collection(self, request):
         try:
             year, month = self._parse_daily_filters(request)
-            daily_payment = self._fetch_daily_collection_map(year, month)
-
             return Response({
-                "year": year,
-                "month": month,
-                "daily_collection": daily_payment,
+                "year":             year,
+                "month":            month,
+                "daily_collection": self._fetch_daily_collection_map(year, month),
             })
-
         except ValidationError:
             raise
         except Exception as e:
-            raise ValidationError(f"An unexpected error occurred: {str(e)}")
-
-    def _parse_daily_filters(self, request):
-        """
-        Both year and month are REQUIRED for day-level granularity.
-        """
-       
-        year = int(request.query_params.get("year",date.today().year))
-        month = int(request.query_params.get("month",date.today().month))
-
-        try:
-            if month < 1 or month > 12:
-                raise ValidationError("month must be between 1 and 12.")
-        except ValueError:
-            raise ValidationError("month must be a valid integer between 1 and 12.")
-
-        return year, month
+            raise ValidationError(f"An unexpected error occurred: {e}")
 
     def _fetch_daily_collection_map(self, year, month):
         """
-        Returns data in attendance-style format:
-        {
-            "Mar-2025": {
-                "01": "500.00",
-                "15": "1200.00",
-                ...
-            }
-        }
+        Returns attendance-style format:
+        { "Mar-2025": { "01": "500.00", "15": "1200.00" } }
         Only days with actual collection are included.
         """
-        qs = (
-            Payment.objects
-            .filter(
-                # is_verified=True,
-                paid_date__year=year,
-                paid_date__month=month,
-            )
+        rows = (
+            self._base_payment_qs(year, month)
             .annotate(day=TruncDay("paid_date"))
             .values("day")
-            .annotate(amt_collected=Sum("amount", default=Decimal("0.00")))
+            .annotate(amt_collected=Sum("amount", default=ZERO))
             .order_by("day")
         )
-        daily_payment = defaultdict(dict)
 
-        for row in qs:
+        daily_payment = defaultdict(dict)
+        for row in rows:
             day: date = row["day"]
-            month_key = day.strftime("%b-%Y")   # "Mar-2025"
-            day_key   = day.strftime("%d")      # "01", "15"
-            daily_payment[month_key][day_key] = str(row["amt_collected"])
+            daily_payment[day.strftime("%b-%Y")][day.strftime("%d")] = str(row["amt_collected"])
 
         return dict(daily_payment)
-    
+
+    # ── payment-mode-analytics ─────────────────────────────────────────────────
+
+    @action(detail=False, methods=["get"], url_path="payment-mode-analytics")
+    def payment_mode_analytics(self, request):
+        """
+        Returns:
+          - summary_cards : digital / cash / cheque totals + grand total
+          - mode_split    : per-method amount + % of total
+          - monthly_trend : month-wise breakdown by method + row total
+        """
+        try:
+            year, month = self._parse_filters(request)
+            return Response(self._fetch_payment_mode_data(year, month))
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise ValidationError(f"An unexpected error occurred: {e}")
+
+    def _fetch_payment_mode_data(self, year, month):
+        qs = self._base_payment_qs(year, month)
+
+        method_totals = qs.values("method").annotate(total=Sum("amount", default=ZERO))
+        method_map    = {row["method"]: row["total"] for row in method_totals}
+        grand_total   = sum(method_map.values()) or ZERO
+
+        def pct(amount):
+            return round(float(amount / grand_total * 100), 1) if grand_total > 0 else 0.0
+
+        mode_split = [
+            {
+                "method": method,
+                "amount": str(method_map.get(method, ZERO)),
+                "pct":    pct(method_map.get(method, ZERO)),
+            }
+            for method in PaymentMethod.values
+        ]
+
+        def group_total(methods):
+            return sum(method_map.get(m, ZERO) for m in methods)
+
+        digital_total = group_total(self.DIGITAL_METHODS)
+        cash_total    = group_total(self.CASH_METHODS)
+        cheque_total  = group_total(self.CHEQUE_METHODS)
+
+        summary_cards = {
+            "digital_payments": {"amount": str(digital_total), "pct_of_total": pct(digital_total)},
+            "cash_payments":    {"amount": str(cash_total),    "pct_of_total": pct(cash_total)},
+            "cheque_payments":  {"amount": str(cheque_total),  "pct_of_total": pct(cheque_total)},
+            "total_collected": {
+                "amount": str(grand_total),
+                "period": f"{calendar.month_abbr[month]} {year}" if month else str(year),
+            },
+        }
+
+        monthly_raw = (
+            qs
+            .annotate(month=TruncMonth("paid_date"))
+            .values("month", "method")
+            .annotate(total=Sum("amount", default=ZERO))
+            .order_by("month", "method")
+        )
+
+        trend_map = defaultdict(lambda: defaultdict(Decimal))
+        for row in monthly_raw:
+            trend_map[row["month"]][row["method"]] += row["total"]
+
+        monthly_trend = [
+            {
+                "month":   month_dt.strftime("%b'%Y"),
+                "methods": {m: str(trend_map[month_dt].get(m, ZERO)) for m in PaymentMethod.values},
+                "total":   str(sum(trend_map[month_dt].values())),
+            }
+            for month_dt in sorted(trend_map)
+        ]
+
+        return {
+            "year":          year,
+            "month":         month,
+            "summary_cards": summary_cards,
+            "mode_split":    mode_split,
+            "monthly_trend": monthly_trend,
+        }
+
+    # ── Utility ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _collection_pct(collected, total):
+        if total and total > 0:
+            return round((collected / total) * 100, 1)
+        return None

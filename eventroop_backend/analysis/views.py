@@ -1,6 +1,8 @@
 import calendar
+from calendar import month_abbr
 from collections import defaultdict
 from decimal import Decimal
+from datetime import date
 
 from django.db.models import (
     DecimalField,
@@ -9,15 +11,19 @@ from django.db.models import (
     OuterRef,
     Subquery,
     Value,
+    Count, Sum, Q,Min,Max
 )
-from django.db.models.functions import Coalesce
-from rest_framework import status
+from django.db.models.functions import Coalesce,TruncMonth
+from rest_framework import status,viewsets
 from rest_framework.response import Response
 from rest_framework.settings import api_settings
 from rest_framework.views import APIView
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 
 from attendance.models import  AttendanceReport
 from payroll.models import SalaryReport, SalaryStructure
+from booking.models import SecondaryOrder,TernaryOrder, TotalInvoice,Payment
 
 from .filters import (
     ALLOWED_EMPLOYEE_SORT_FIELDS,
@@ -26,7 +32,15 @@ from .filters import (
     build_sort,
 )
 from .mixins import PermissionScopeMixin
-from .serializers import EmployeeSalaryAnalysisSerializer, UserAttendanceSerializer
+from .serializers import (
+    EmployeeSalaryAnalysisSerializer,
+    UserAttendanceSerializer,
+    MonthlyAnalyticsRowSerializer,
+    MonthlyAnalyticsSummarySerializer,
+    MonthlyAnalyticsResponseSerializer,
+    )
+
+
 
 ZERO = Decimal("0.00")
 _ZERO_FIELD = Value(
@@ -438,5 +452,225 @@ class UserAttendanceAPIView(PermissionScopeMixin, APIView):
     def _month_sort_key(month_str: str):
         from datetime import datetime
         return datetime.strptime(month_str, "%b-%Y")
-    
-    
+
+class PaymentMasterViewSet(viewsets.ViewSet):
+    """
+    ViewSet for monthly performance across invoices, bookings, and payments.
+
+    Endpoint:
+        GET /api/month-wise-performance/
+        GET /api/month-wise-performance/?year=2024&month=3
+    """
+
+    @action(detail=False, methods=["get"],url_path='month-wise-performance')
+    def month_wise_performance(self, request):
+        try:
+            year, month = self._parse_filters(request)
+            monthly_data = self._fetch_monthly_data(year, month)
+            rows = self._build_rows(monthly_data)
+            summary = self._build_summary(rows)
+
+            response_data = {
+                "year": year,
+                "month": month,
+                "rows": rows,
+                "summary": summary
+            }
+
+            serializer = MonthlyAnalyticsResponseSerializer(response_data)
+            return Response(serializer.data)
+
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise ValidationError(f"An unexpected error occurred: {str(e)}")
+
+    # -------------------------
+    # SAME METHODS (unchanged)
+    # -------------------------
+
+    def _parse_filters(self, request):
+        current_year = date.today().year
+
+        year_param = request.query_params.get("year")
+        month_param = request.query_params.get("month")
+
+        year = int(year_param) if year_param else current_year
+
+        if month_param:
+            try:
+                month = int(month_param)
+                if month < 1 or month > 12:
+                    raise ValidationError("Month must be between 1 and 12")
+            except ValueError:
+                raise ValidationError("Month must be a valid integer between 1 and 12")
+        else:
+            month = 0
+
+        return year, month
+
+    def _fetch_monthly_data(self, year, month):
+        invoice_data = self._fetch_invoice_data(year, month)
+        secondary_bookings = self._fetch_secondary_bookings(year, month)
+        ternary_bookings = self._fetch_ternary_bookings(year, month)
+        payment_data = self._fetch_payment_data(year, month)
+
+        return self._merge_monthly_data(
+            invoice_data,
+            secondary_bookings,
+            ternary_bookings,
+            payment_data
+        )
+
+    def _fetch_invoice_data(self, year, month):
+        queryset = TotalInvoice.objects.filter(period_start__year=year)
+
+        if month != 0:
+            queryset = queryset.filter(period_start__month=month)
+
+        return (
+            queryset
+            .annotate(month=TruncMonth("period_start"))
+            .values("month")
+            .annotate(
+                invoice_value=Sum("total_amount", default=Decimal("0.00")),
+                pending_invoices=Count("id", filter=~Q(status="PAID")),
+                total_invoices=Count("id"),
+            )
+            .order_by("month")
+        )
+
+    def _fetch_payment_data(self, year, month):
+        queryset = Payment.objects.filter(
+            is_verified=True,
+            paid_date__year=year
+        )
+
+        if month != 0:
+            queryset = queryset.filter(paid_date__month=month)
+
+        return (
+            queryset
+            .annotate(month=TruncMonth("paid_date"))
+            .values("month")
+            .annotate(
+                amt_collected=Sum("amount", default=Decimal("0.00"))
+            )
+            .order_by("month")
+        )
+
+    def _fetch_secondary_bookings(self, year, month):
+        queryset = SecondaryOrder.objects.filter(start_datetime__year=year)
+
+        if month != 0:
+            queryset = queryset.filter(start_datetime__month=month)
+
+        return (
+            queryset
+            .annotate(month=TruncMonth("start_datetime"))
+            .values("month")
+            .annotate(count=Count("id"))
+            .order_by("month")
+        )
+
+    def _fetch_ternary_bookings(self, year, month):
+        queryset = TernaryOrder.objects.filter(start_datetime__year=year)
+
+        if month != 0:
+            queryset = queryset.filter(start_datetime__month=month)
+
+        return (
+            queryset
+            .annotate(month=TruncMonth("start_datetime"))
+            .values("month")
+            .annotate(count=Count("id"))
+            .order_by("month")
+        )
+
+    def _merge_monthly_data(self, invoice_data, secondary_bookings, ternary_bookings, payment_data):
+        monthly_map = defaultdict(lambda: {
+            "bookings": 0,
+            "invoice_value": Decimal("0.00"),
+            "amt_collected": Decimal("0.00"),
+            "pending_invoices": 0,
+            "total_invoices": 0,
+        })
+
+        for row in invoice_data:
+            month = row["month"]
+            monthly_map[month].update({
+                "invoice_value": row["invoice_value"] or Decimal("0.00"),
+                "pending_invoices": row["pending_invoices"],
+                "total_invoices": row["total_invoices"],
+            })
+
+        for row in secondary_bookings:
+            monthly_map[row["month"]]["bookings"] += row["count"]
+
+        for row in ternary_bookings:
+            monthly_map[row["month"]]["bookings"] += row["count"]
+
+        for row in payment_data:
+            monthly_map[row["month"]]["amt_collected"] = (
+                row["amt_collected"] or Decimal("0.00")
+            )
+
+        return monthly_map
+
+    def _build_rows(self, monthly_data):
+        rows = []
+
+        for month in sorted(monthly_data.keys(), reverse=True):
+            rows.append(self._build_row(month, monthly_data[month]))
+
+        return rows
+
+    def _build_row(self, month, data):
+        invoice_value = data["invoice_value"]
+        amt_collected = data["amt_collected"]
+        balance = invoice_value - amt_collected
+
+        return {
+            "month": month.strftime("%b'%Y") if month else "All Months",
+            "total_bookings": data["bookings"],
+            "invoice_value": str(invoice_value),
+            "amt_collected": str(amt_collected),
+            "balance": str(balance),
+            "collection_pct": self._calculate_collection_pct(amt_collected, invoice_value),
+            "pending_invoices": data["pending_invoices"],
+            "invoices_not_generated": max(data["bookings"] - data["total_invoices"], 0)
+        }
+
+    def _build_summary(self, rows):
+        if not rows:
+            return self._empty_summary()
+
+        total_invoice_value = sum(Decimal(r["invoice_value"]) for r in rows)
+        total_amt_collected = sum(Decimal(r["amt_collected"]) for r in rows)
+        total_balance = sum(Decimal(r["balance"]) for r in rows)
+
+        return {
+            "total_bookings": sum(int(r["total_bookings"]) for r in rows),
+            "total_invoice_value": str(total_invoice_value),
+            "total_amt_collected": str(total_amt_collected),
+            "total_balance": str(total_balance),
+            "collection_pct": self._calculate_collection_pct(total_amt_collected, total_invoice_value),
+            "total_pending_invoices": sum(int(r["pending_invoices"]) for r in rows),
+            "total_invoices_not_generated": sum(int(r["invoices_not_generated"]) for r in rows),
+        }
+
+    def _empty_summary(self):
+        return {
+            "total_bookings": 0,
+            "total_invoice_value": "0.00",
+            "total_amt_collected": "0.00",
+            "total_balance": "0.00",
+            "collection_pct": None,
+            "total_pending_invoices": 0,
+            "total_invoices_not_generated": 0,
+        }
+
+    def _calculate_collection_pct(self, collected, total):
+        if total and total > 0:
+            return round((collected / total) * 100, 1)
+        return None

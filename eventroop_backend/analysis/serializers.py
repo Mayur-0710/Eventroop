@@ -53,3 +53,29 @@ class UserAttendanceSerializer(serializers.Serializer):
         We simply return it as-is.
         """
         return obj.get("attendance", {})
+
+
+class MonthlyAnalyticsRowSerializer(serializers.Serializer):
+    month = serializers.CharField()
+    total_bookings = serializers.IntegerField()
+    invoice_value = serializers.CharField()
+    amt_collected = serializers.CharField()
+    balance = serializers.CharField()
+    collection_pct = serializers.FloatField(allow_null=True)
+    pending_invoices = serializers.IntegerField()
+    invoices_not_generated = serializers.IntegerField()
+
+class MonthlyAnalyticsSummarySerializer(serializers.Serializer):
+    total_bookings = serializers.IntegerField()
+    total_invoice_value = serializers.CharField()
+    total_amt_collected = serializers.CharField()
+    total_balance = serializers.CharField()
+    collection_pct = serializers.FloatField(allow_null=True)
+    total_pending_invoices = serializers.IntegerField()
+    total_invoices_not_generated = serializers.IntegerField()
+
+class MonthlyAnalyticsResponseSerializer(serializers.Serializer):
+    year = serializers.IntegerField()
+    month = serializers.IntegerField()
+    rows = MonthlyAnalyticsRowSerializer(many=True)
+    summary = MonthlyAnalyticsSummarySerializer()

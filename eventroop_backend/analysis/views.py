@@ -13,7 +13,7 @@ from django.db.models import (
     Value,
     Count, Sum, Q,Min,Max
 )
-from django.db.models.functions import Coalesce,TruncMonth
+from django.db.models.functions import Coalesce,TruncMonth,TruncDay
 from rest_framework import status,viewsets
 from rest_framework.response import Response
 from rest_framework.settings import api_settings
@@ -674,3 +674,77 @@ class PaymentMasterViewSet(viewsets.ViewSet):
         if total and total > 0:
             return round((collected / total) * 100, 1)
         return None
+    
+    @action(detail=False, methods=["get"], url_path="daily-collection")
+    def daily_collection(self, request):
+        try:
+            year, month = self._parse_daily_filters(request)
+            daily_payment = self._fetch_daily_collection_map(year, month)
+
+            return Response({
+                "year": year,
+                "month": month,
+                "daily_collection": daily_payment,
+            })
+
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise ValidationError(f"An unexpected error occurred: {str(e)}")
+
+    # -------------------------
+    # DAILY COLLECTION HELPERS
+    # -------------------------
+
+    def _parse_daily_filters(self, request):
+        """
+        Both year and month are REQUIRED for day-level granularity.
+        """
+       
+        year = int(request.query_params.get("year",date.today().year))
+        month = int(request.query_params.get("month",date.today().month))
+
+        try:
+            if month < 1 or month > 12:
+                raise ValidationError("month must be between 1 and 12.")
+        except ValueError:
+            raise ValidationError("month must be a valid integer between 1 and 12.")
+
+        return year, month
+
+    
+
+    def _fetch_daily_collection_map(self, year, month):
+        """
+        Returns data in attendance-style format:
+        {
+            "Mar-2025": {
+                "01": "500.00",
+                "15": "1200.00",
+                ...
+            }
+        }
+        Only days with actual collection are included.
+        """
+        qs = (
+            Payment.objects
+            .filter(
+                # is_verified=True,
+                paid_date__year=year,
+                paid_date__month=month,
+            )
+            .annotate(day=TruncDay("paid_date"))
+            .values("day")
+            .annotate(amt_collected=Sum("amount", default=Decimal("0.00")))
+            .order_by("day")
+        )
+        daily_payment = defaultdict(dict)
+
+        for row in qs:
+            day: date = row["day"]
+            month_key = day.strftime("%b-%Y")   # "Mar-2025"
+            day_key   = day.strftime("%d")      # "01", "15"
+            daily_payment[month_key][day_key] = str(row["amt_collected"])
+
+        return dict(daily_payment)
+    

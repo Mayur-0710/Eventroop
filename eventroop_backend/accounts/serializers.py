@@ -3,6 +3,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from venue_manager.models import Venue,Service,Resource
 from .models import CustomUser, UserHierarchy, PricingModel, UserPlan
+from django.contrib.auth.password_validation import validate_password
 
 # ---------------------- Entity mini Serializer ----------------------
 class VenueMiniSerializer(serializers.ModelSerializer):
@@ -360,6 +361,30 @@ class ChangePasswordSerializer(serializers.Serializer):
     old_password = serializers.CharField(write_only=True)
     new_password = serializers.CharField(write_only=True)
 
+
+class RequestOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        if not CustomUser.objects.filter(email=value).exists():
+            raise serializers.ValidationError("No account found with this email.")
+        return value
+
+
+class VerifyOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    otp   = serializers.CharField(max_length=6, min_length=6)
+
+
+class ResetPasswordSerializer(serializers.Serializer):
+    reset_token      = serializers.UUIDField()
+    new_password     = serializers.CharField(write_only=True, validators=[validate_password])
+    confirm_password = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+        return attrs
 # ---------------------- PricingModel Serializer ----------------------
 class PricingModelSerializer(serializers.ModelSerializer):
     created_by_email = serializers.EmailField(source="created_by.email", read_only=True)
@@ -385,3 +410,4 @@ class UserPlanSerializer(serializers.ModelSerializer):
         model = UserPlan
         fields = '__all__'
         read_only_fields = ('is_active', 'end_date')
+

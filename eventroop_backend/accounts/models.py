@@ -359,3 +359,26 @@ class UserPlan(models.Model):
 
     def __str__(self):
         return f"{self.user.email} → {self.plan.name} ({self.plan.get_plan_type_display()})"
+
+class PasswordResetOTP(models.Model):
+    user        = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name="reset_otps")
+    otp         = models.CharField(max_length=6)
+    reset_token = models.UUIDField(null=True, blank=True)
+    is_verified = models.BooleanField(default=False)
+    is_used     = models.BooleanField(default=False)
+    created_at  = models.DateTimeField(auto_now_add=True)
+    expires_at  = models.DateTimeField()
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def save(self, *args, **kwargs):
+        if not self.pk:
+            self.expires_at = timezone.localtime() + timedelta(minutes=10)
+        super().save(*args, **kwargs)
+
+    def is_expired(self):
+        return timezone.localtime() > self.expires_at
+
+    def __str__(self):
+        return f"OTP for {self.user.email} ({'used' if self.is_used else 'pending'})"

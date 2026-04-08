@@ -364,11 +364,18 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 class RequestOTPSerializer(serializers.Serializer):
     email = serializers.EmailField()
+    channel = serializers.CharField()
 
     def validate_email(self, value):
         if not CustomUser.objects.filter(email=value).exists():
             raise serializers.ValidationError("No account found with this email.")
         return value
+    
+    def validate_channel(self, value):
+        if value not in ("sms","whatsapp","email"):
+            raise serializers.ValidationError("Channel is not valid")
+        return value
+    
 
 
 class VerifyOTPSerializer(serializers.Serializer):

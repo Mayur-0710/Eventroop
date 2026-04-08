@@ -6,8 +6,9 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.forms import ReadOnlyPasswordHashField
 from django.core.exceptions import ValidationError
 from django.contrib import messages
+from django.utils.html import format_html
 
-from .models import CustomUser, UserHierarchy, PricingModel, UserPlan
+from .models import CustomUser, UserHierarchy, PricingModel, UserPlan, PasswordResetOTP
 
 
 # -------------------------------------------------------------------
@@ -610,3 +611,39 @@ class UserPlanAdmin(admin.ModelAdmin):
         }
         return plan_types.get(obj.plan.plan_type, obj.plan.plan_type)
     plan_type_display.short_description = 'Plan Type'
+
+@admin.register(PasswordResetOTP)
+class PasswordResetOTPAdmin(admin.ModelAdmin):
+    list_display  = ("user", "status_badge", "is_verified", "created_at", "expires_at", "is_expired_display")
+    list_filter   = ("is_used", "is_verified")
+    search_fields = ("user__email", "user__username")
+    readonly_fields = (
+        "user", "otp", "reset_token", "is_verified",
+        "is_used", "created_at", "expires_at", "is_expired_display",
+    )
+    ordering = ("-created_at",)
+
+    @admin.display(description="Status")
+    def status_badge(self, obj):
+        if obj.is_used:
+            color, label = "#6c757d", "Used"
+        elif obj.is_verified:
+            color, label = "#0d6efd", "Verified"
+        elif obj.is_expired():
+            color, label = "#dc3545", "Expired"
+        else:
+            color, label = "#198754", "Pending"
+        return format_html(
+            '<span style="background:{};color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">{}</span>',
+            color, label,
+        )
+
+    @admin.display(description="Expired?", boolean=True)
+    def is_expired_display(self, obj):
+        return obj.is_expired()
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

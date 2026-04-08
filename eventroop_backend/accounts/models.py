@@ -4,10 +4,9 @@ from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from datetime import timedelta
+import hashlib, random, uuid
 
-# -------------------------------------------------------------------
-#                         USER MANAGER
-# -------------------------------------------------------------------
+# ------------------------USER MANAGER-------------------------------
 class CustomUserManager(BaseUserManager):
     """Custom manager for CustomUser model with user_type-based filters."""
 
@@ -119,10 +118,7 @@ class CustomUserManager(BaseUserManager):
             "all_staff": self.get_staff_under_owner(owner),
         }
 
-
-# -------------------------------------------------------------------
-#                         USER MODEL
-# -------------------------------------------------------------------
+# ------------------------USER MODEL---------------------------------
 class CustomUser(AbstractBaseUser, PermissionsMixin):
     """Core user model supporting multiple user_types and hierarchy."""
 
@@ -223,9 +219,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return f"{self.first_name} {self.last_name} ({self.user_type})"
 
-# -------------------------------------------------------------------
-#                         USER HIERARCHY
-# -------------------------------------------------------------------
+# ------------------------USER HIERARCHY-----------------------------
 class UserHierarchy(models.Model):
     """Defines the organizational hierarchy between users."""
 
@@ -281,10 +275,7 @@ class UserHierarchy(models.Model):
             self.level = 0  # top-level (Owner)
         super().save(*args, **kwargs)
 
-
-# -------------------------------------------------------------------
-#                         PRICING MODEL
-# -------------------------------------------------------------------
+# ------------------------PRICING MODEL------------------------------
 class PricingModel(models.Model):
     """Represents available pricing plans for owners."""
 
@@ -323,10 +314,7 @@ class PricingModel(models.Model):
     def __str__(self):
         return f"{self.name} ({self.get_plan_type_display()})"
 
-
-# -------------------------------------------------------------------
-#                         USER PLAN
-# -------------------------------------------------------------------
+# ------------------------USER PLAN----------------------------------
 class UserPlan(models.Model):
     """Assigns a pricing plan to a VSRE Owner."""
 
@@ -360,9 +348,10 @@ class UserPlan(models.Model):
     def __str__(self):
         return f"{self.user.email} → {self.plan.name} ({self.plan.get_plan_type_display()})"
 
+# ------------------------RESET PASSWORD-----------------------------
 class PasswordResetOTP(models.Model):
     user        = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name="reset_otps")
-    otp         = models.CharField(max_length=6)
+    otp         = models.CharField(max_length=64)
     reset_token = models.UUIDField(null=True, blank=True)
     is_verified = models.BooleanField(default=False)
     is_used     = models.BooleanField(default=False)
@@ -379,6 +368,63 @@ class PasswordResetOTP(models.Model):
 
     def is_expired(self):
         return timezone.localtime() > self.expires_at
+    
+    @classmethod
+    def generate(cls, user) -> str:
+        """
+        Invalidate all previous unused OTPs, create a new one.
+        Returns the raw OTP (to be emailed); only the hash is persisted.
+        """
+        cls.objects.filter(user=user, is_used=False).update(is_used=True)
+
+        # raw = f"{random.SystemRandom().randint(0, 999999):06d}"
+        
+        raw = f"{000000:06d}" #TODO:remove after Twilio integration 
+        cls.objects.create(user=user, otp=hashlib.sha256(raw.encode()).hexdigest())
+        return raw
+
+    @classmethod
+    def verify(cls, user, raw_otp):
+        """
+        Look up the latest valid OTP record for this user.
+        Increments attempts on every miss. Returns the OTP object on match,
+        or raises one of: InvalidOTP, ExpiredOTP, TooManyAttempts.
+        """
+        # Grab the latest non-used, non-verified record regardless of code
+        latest = (
+            cls.objects
+            .filter(user=user, is_used=False, is_verified=False)
+            .order_by("-created_at")
+            .first()
+        )
+
+        if not latest:
+            raise cls.InvalidOTP()
+
+        if latest.is_expired():
+            raise cls.ExpiredOTP()
+
+        if latest.otp != hashlib.sha256(raw_otp.encode()).hexdigest():
+            raise cls.InvalidOTP()
+
+        return latest
+    
+    def issue_reset_token(self) -> uuid.UUID:
+        """Mark as verified and mint a 15-minute reset token."""
+        self.is_verified     = True
+        self.reset_token     = uuid.uuid4()
+        self.save(update_fields=["is_verified", "reset_token"])
+        return self.reset_token
+    
+    class InvalidOTP(Exception):
+        pass
+
+    class ExpiredOTP(Exception):
+        pass
+
+    class TooManyAttempts(Exception):
+        pass
 
     def __str__(self):
         return f"OTP for {self.user.email} ({'used' if self.is_used else 'pending'})"
+    

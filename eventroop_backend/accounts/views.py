@@ -2,20 +2,17 @@
 from django.utils import timezone
 from django.contrib.auth.hashers import check_password 
 from rest_framework import viewsets,generics,status
-from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated,AllowAny
 from django.shortcuts import get_object_or_404
-from rest_framework.exceptions import AuthenticationFailed
 from .permissions import IsVSREOwner,IsCreator,IsVSREOwnerOrManager,IsMasterAdmin
 from .models import CustomUser, UserHierarchy, PricingModel, UserPlan,PasswordResetOTP
 from .serializers import *
-import random
+from .utils import send_otp
 import uuid
-from django.core.mail import send_mail
-from django.conf import settings
 
 # ---------------------- User registration ViewSet ----------------------
 class CustomerRegistrationView(generics.CreateAPIView):
@@ -85,7 +82,6 @@ class ChangePasswordView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 # ---------------------- Password Reset via OTP ----------------------
-
 class RequestPasswordResetOTPView(APIView):
     """
     Step 1: User submits their email.
@@ -100,39 +96,28 @@ class RequestPasswordResetOTPView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         email = serializer.validated_data["email"]
-        user  = CustomUser.objects.get(email=email)
+        channel = serializer.validated_data["channel"]
+        user = CustomUser.objects.get(email=email)
 
         # Invalidate all previous unused OTPs for this user
         PasswordResetOTP.objects.filter(user=user, is_used=False).update(is_used=True)
 
         # Generate and store new OTP
-        # otp_code = f"{random.SystemRandom().randint(0, 999999):06d}"
-        otp_code = f"{000000:06d}"
-        PasswordResetOTP.objects.create(user=user, otp=otp_code)
-
-        # # Send email
-        # send_mail(
-        #     subject="Your Password Reset OTP",
-        #     message=(
-        #         f"Hi {user.first_name or user.email},\n\n"
-        #         f"Your OTP for password reset is: {otp_code}\n\n"
-        #         f"This code is valid for 10 minutes.\n"
-        #         f"If you didn't request this, please ignore this email."
-        #     ),
-        #     from_email=settings.DEFAULT_FROM_EMAIL,
-        #     recipient_list=[email],
-        #     fail_silently=False,
-        # )
-
+        raw_otp = PasswordResetOTP.generate(user)
+        
+        #TODO:Uncomment after Twilio integration 
+        # send_otp(channel=channel, user=user, raw_otp=raw_otp)
+    
         return Response(
-            {"message": "OTP sent to your email address."},
+            {"message": f"OTP on {channel.capitalize()} sent successfully"},
             status=status.HTTP_200_OK,
         )
 
 class VerifyOTPView(APIView):
     """
-    Step 2: User submits email + OTP.
-    On success, returns a short-lived reset_token to authorise the password change.
+    Step 2 — POST { email, otp }
+    Validates the OTP. On success returns a short-lived reset_token
+    that Step 3 requires.
     """
     permission_classes = [AllowAny]
 
@@ -142,58 +127,51 @@ class VerifyOTPView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         email    = serializer.validated_data["email"]
-        otp_code = serializer.validated_data["otp"]
+        raw_otp  = serializer.validated_data["otp"]
 
         try:
             user = CustomUser.objects.get(email=email)
         except CustomUser.DoesNotExist:
-            return Response({"error": "Invalid credentials."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Invalid Email."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Fetch the latest unused, unverified OTP for this user
-        otp_obj = (
-            PasswordResetOTP.objects
-            .filter(user=user, otp=otp_code, is_used=False, is_verified=False)
-            .order_by("-created_at")
-            .first()
-        )
-
-        if not otp_obj:
-            return Response({"error": "Invalid OTP."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if otp_obj.is_expired():
+        try:
+            otp_obj = PasswordResetOTP.verify(user, raw_otp)
+        except PasswordResetOTP.TooManyAttempts:
+            return Response(
+                {"error": "Too many incorrect attempts. Please request a new OTP."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        except PasswordResetOTP.ExpiredOTP:
             return Response(
                 {"error": "OTP has expired. Please request a new one."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except PasswordResetOTP.InvalidOTP:
+            return Response({"error": "Invalid OTP."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Mark as verified and issue a reset token
-        reset_token = uuid.uuid4()
-        otp_obj.is_verified  = True
-        otp_obj.reset_token  = reset_token
-        otp_obj.save()
+        reset_token = otp_obj.issue_reset_token()
 
-        return Response(
-            {"reset_token": str(reset_token)},
-            status=status.HTTP_200_OK,
-        )
+        return Response({"reset_token": str(reset_token)}, status=status.HTTP_200_OK)
+
 
 class ResetPasswordView(APIView):
     """
-    Step 3: User submits reset_token + new_password + confirm_password.
-    Validates the token, sets the new password, and marks the OTP record as used.
+    Step 3 — POST { reset_token, new_password, confirm_password }
+    Validates the token, changes the password, invalidates the record.
     """
     permission_classes = [AllowAny]
+    throttle_scope     = "otp_verify"
 
     def post(self, request):
         serializer = ResetPasswordSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        reset_token = serializer.validated_data["reset_token"]
+        reset_token  = serializer.validated_data["reset_token"]
         new_password = serializer.validated_data["new_password"]
 
         try:
-            otp_obj = PasswordResetOTP.objects.get(
+            otp_obj = PasswordResetOTP.objects.select_related("user").get(
                 reset_token=reset_token,
                 is_verified=True,
                 is_used=False,
@@ -204,24 +182,17 @@ class ResetPasswordView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if otp_obj.is_expired():
-            return Response(
-                {"error": "Reset token has expired. Please start over."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Set the new password and invalidate the token
         user = otp_obj.user
         user.set_password(new_password)
-        user.save()
+        user.save(update_fields=["password"])
 
         otp_obj.is_used = True
-        otp_obj.save()
+        otp_obj.save(update_fields=["is_used"])
 
         return Response(
-            {"message": "Password reset successful. You can now log in."},
+            {"message": "Password reset successful."},
             status=status.HTTP_200_OK,
-        )    
+        )
 
 # ---------------------- User Profile ViewSet -------------------------
 class UserProfileView(APIView):

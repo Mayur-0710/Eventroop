@@ -109,7 +109,7 @@ class RequestPasswordResetOTPView(APIView):
         # send_otp(channel=channel, user=user, raw_otp=raw_otp)
     
         return Response(
-            {"message": f"OTP on {channel.capitalize()} sent successfully"},
+            {"message": f"OTP on {channel} sent successfully"},
             status=status.HTTP_200_OK,
         )
 

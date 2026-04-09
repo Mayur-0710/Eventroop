@@ -1019,7 +1019,7 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
         """Get invoice summary statistics for the current user."""
         queryset = self.filter_queryset(self.get_queryset())
         total_stats = queryset.aggregate(
-            total_invoices=Count('id'),
+            generated_invoices=Count('id'),
             total_amount=Sum('total_amount'),
             paid_amount=Sum('paid_amount'),
             remaining_amount=Sum('remaining_amount'),

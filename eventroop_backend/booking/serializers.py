@@ -601,7 +601,7 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
 class InvoiceSummarySerializer(serializers.Serializer):
     """Serializer for invoice summary / statistics"""
 
-    total_invoices        = serializers.IntegerField()
+    generated_invoices        = serializers.IntegerField()
     total_amount          = serializers.DecimalField(max_digits=12, decimal_places=2)
     paid_amount           = serializers.DecimalField(max_digits=12, decimal_places=2)
     remaining_amount      = serializers.DecimalField(max_digits=12, decimal_places=2)

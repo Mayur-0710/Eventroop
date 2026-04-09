@@ -544,8 +544,9 @@ class PaymentMasterViewSet(viewsets.ViewSet):
             .values("month")
             .annotate(
                 invoice_value    = Sum("total_amount", default=ZERO),
-                pending_invoices = Count("id", filter=~Q(status="PAID")),
-                total_invoices   = Count("id"),
+                unpaid_invoices = Count("id", filter=~Q(status="PAID")),
+                paid_invoices = Count("id", filter=Q(status="PAID")),
+                generated_invoices   = Count("id"),
             )
             .order_by("month")
         )
@@ -577,15 +578,17 @@ class PaymentMasterViewSet(viewsets.ViewSet):
             "bookings":        0,
             "invoice_value":   ZERO,
             "amt_collected":   ZERO,
-            "pending_invoices": 0,
-            "total_invoices":  0,
+            "unpaid_invoices": 0,
+            "paid_invoices": 0,
+            "generated_invoices":  0,
         })
 
         for row in invoice_data:
             monthly_map[row["month"]].update({
                 "invoice_value":    row["invoice_value"]    or ZERO,
-                "pending_invoices": row["pending_invoices"],
-                "total_invoices":   row["total_invoices"],
+                "unpaid_invoices": row["unpaid_invoices"],
+                "paid_invoices": row["paid_invoices"],
+                "generated_invoices":   row["generated_invoices"],
             })
 
         for row in (*secondary_bookings, *ternary_bookings):
@@ -604,6 +607,7 @@ class PaymentMasterViewSet(viewsets.ViewSet):
 
     def _build_row(self, month, data):
         invoice_value = data["invoice_value"]
+        generated_invoices = data["generated_invoices"]
         amt_collected = data["amt_collected"]
         return {
             "month":                  month.strftime("%b'%Y") if month else "All Months",
@@ -612,8 +616,10 @@ class PaymentMasterViewSet(viewsets.ViewSet):
             "amt_collected":          str(amt_collected),
             "balance":                str(invoice_value - amt_collected),
             "collection_pct":         self._collection_pct(amt_collected, invoice_value),
-            "pending_invoices":       data["pending_invoices"],
-            "invoices_not_generated": max(data["bookings"] - data["total_invoices"], 0),
+            "unpaid_invoices":        data["unpaid_invoices"],
+            "paid_invoices":          data["paid_invoices"],
+            "generated_invoices":     str(generated_invoices),
+            "not_generated_invoices": max(data["bookings"] - data["generated_invoices"], 0),
         }
 
     def _build_summary(self, rows):
@@ -621,21 +627,24 @@ class PaymentMasterViewSet(viewsets.ViewSet):
             return {
                 "total_bookings": 0, "total_invoice_value": "0.00",
                 "total_amt_collected": "0.00", "total_balance": "0.00",
-                "collection_pct": None, "total_pending_invoices": 0,
-                "total_invoices_not_generated": 0,
+                "collection_pct": "0.00", "total_unpaid_invoices": 0,
+                "total_paid_invoices": 0,
+                "total_not_generated_invoices": 0, "total_generated_invoices":0
             }
 
         total_invoice   = sum(Decimal(r["invoice_value"])  for r in rows)
         total_collected = sum(Decimal(r["amt_collected"])   for r in rows)
 
         return {
-            "total_bookings":             sum(int(r["total_bookings"])         for r in rows),
-            "total_invoice_value":        str(total_invoice),
-            "total_amt_collected":        str(total_collected),
-            "total_balance":              str(total_invoice - total_collected),
-            "collection_pct":             self._collection_pct(total_collected, total_invoice),
-            "total_pending_invoices":     sum(int(r["pending_invoices"])       for r in rows),
-            "total_invoices_not_generated": sum(int(r["invoices_not_generated"]) for r in rows),
+            "total_bookings":               sum(int(r["total_bookings"]) for r in rows),
+            "total_invoice_value":          str(total_invoice),
+            "total_amt_collected":          str(total_collected),
+            "total_balance":                str(total_invoice - total_collected),
+            "collection_pct":               self._collection_pct(total_collected, total_invoice),
+            "total_unpaid_invoices":        sum(int(r["unpaid_invoices"]) for r in rows),
+            "total_paid_invoices":          sum(int(r["paid_invoices"]) for r in rows),
+            "total_generated_invoices":     sum(int(r["generated_invoices"]) for r in rows),
+            "total_not_generated_invoices": sum(int(r["not_generated_invoices"]) for r in rows),
         }
 
     # ── daily-collection ───────────────────────────────────────────────────────
@@ -764,4 +773,4 @@ class PaymentMasterViewSet(viewsets.ViewSet):
     def _collection_pct(collected, total):
         if total and total > 0:
             return round((collected / total) * 100, 1)
-        return None
+        return "0.00"

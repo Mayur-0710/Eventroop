@@ -277,6 +277,66 @@ class Patient(models.Model):
             self.patient_id = f"{self.pk:05}"
             super().save(update_fields=["patient_id"])
 
+    
+class ContactBooking(models.Model):
+    """Model for manually created bookings by staff/admin."""
+
+    # Patient / Customer Info
+    patient = models.ForeignKey(
+        Patient,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='manual_bookings',
+        help_text="Linked user account (optional for walk-ins)"
+    )
+
+    booked_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_manual_bookings',
+        help_text="Staff member who created this booking"
+    )
+    
+    # Address
+    address = models.TextField()
+    
+    # Service
+    service = models.ForeignKey(
+        "venue_manager.Service",
+        on_delete=models.PROTECT,
+        related_name='manual_bookings'
+    )
+
+    # Scheduling
+    start_date = models.DateField(help_text="Booking start date")
+    end_date = models.DateField(help_text="Booking end date")
+
+    # Details
+    description = models.TextField(
+        blank=True,
+        help_text="Additional notes, special requirements, or reason for booking"
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-start_date']
+        verbose_name = "Contact Booking"
+        verbose_name_plural = "Contact Bookings"
+        indexes = [
+            models.Index(fields=['start_date', 'end_date']),
+            models.Index(fields=['patient']),
+            models.Index(fields=['booked_by']),
+        ]
+    
+    def __str__(self):
+        return f"#{self.pk} - {self.patient.get_full_name()}"
+
+
 class PrimaryOrder(models.Model):
     order_id = models.CharField(max_length=50, blank=True)
 

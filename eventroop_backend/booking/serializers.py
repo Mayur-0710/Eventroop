@@ -142,6 +142,37 @@ class PackageSerializer(serializers.ModelSerializer):
             "belongs_to_type",
         ]
 
+from rest_framework import serializers
+from .models import ContactBooking
+
+class ContactBookingSerializer(serializers.ModelSerializer):
+    patient_name = serializers.CharField(source="patient.get_full_name",read_only=True)
+    mobile_number = serializers.CharField(source="booked_by.mobile_number",read_only=True)
+
+    class Meta:
+        model = ContactBooking
+        fields = [
+            "patient",
+            "patient_name",
+            "mobile_number",
+            "booked_by",
+            "address",
+            "service",
+            "start_date",
+            "end_date",
+            "description",
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at','booked_by']
+
+    def validate(self, data):
+        start = data.get("start_datetime")
+        end = data.get("end_datetime")
+
+        if start and end and start >= end:
+            raise serializers.ValidationError("End time must be after start time.")
+
+        return data
+
 class TernaryOrderCreateSerializer(serializers.ModelSerializer):
     """
     Create a TernaryOrder (service) under a SecondaryOrder.
@@ -250,7 +281,6 @@ class TernaryOrderSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'order_id', 'subtotal', 'created_at', 'updated_at']
-         
 
 class SecondaryOrderSerializer(serializers.ModelSerializer):
     """Read serializer for a SecondaryOrder (one period/month slot)."""

@@ -7,6 +7,7 @@ router = DefaultRouter()
 # Public endpoints (no authentication required)
 router.register(r'public-venues', PublicVenueViewSet, basename='public-venues')
 router.register(r'public-services', PublicServiceViewSet, basename='public-services')
+router.register(r'contact-bookings', ContactBookingViewSet, basename='contact-booking')
 
 # Authenticated endpoints
 router.register(r'patients', PatientViewSet, basename='patients')

@@ -1,6 +1,11 @@
 from venue_manager.models import Venue, Service, Resource
-from venue_manager.serializers import VenueSerializer, ServiceSerializer,VenueDropdownSerializer,ServiceDropdownSerializer
-from rest_framework import viewsets, permissions, status
+from venue_manager.serializers import (
+    VenueSerializer,
+    ServiceSerializer,
+    VenueDropdownSerializer,
+    ServiceDropdownSerializer
+)
+from rest_framework import viewsets, permissions, status,pagination
 from .serializers import *
 from .models import *
 from .filters import EntityFilter
@@ -83,6 +88,15 @@ class PublicServiceViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())
         return Response(ServiceDropdownSerializer(queryset,many=True).data)
 
+class ContactBookingViewSet(viewsets.ModelViewSet):
+    queryset = ContactBooking.objects.select_related(
+        'patient', 'booked_by', 'service'
+    ).all()
+    serializer_class = ContactBookingSerializer
+    pagination_class = pagination.CursorPagination
+
+    def perform_create(self, serializer):
+        serializer.save(booked_by=self.request.user)
 
 class PatientViewSet(viewsets.ModelViewSet):
     queryset = Patient.objects.all()

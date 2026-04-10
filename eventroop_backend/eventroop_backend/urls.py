@@ -20,6 +20,7 @@ urlpatterns = [
     path('payroll/', include(('payroll.urls', 'payroll'), namespace='payroll')),
     path('notification/', include(('notification.urls', 'notification'), namespace='notification')),
     path('analysis/', include(('analysis.urls', 'analysis'), namespace='analysis')),
+    path('wallet/', include(('wallet.urls', 'wallet'), namespace='wallet')),
 ]
 
 urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)

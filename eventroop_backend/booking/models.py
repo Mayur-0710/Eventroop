@@ -277,7 +277,6 @@ class Patient(models.Model):
             self.patient_id = f"{self.pk:05}"
             super().save(update_fields=["patient_id"])
 
-    
 class ContactBooking(models.Model):
     """Model for manually created bookings by staff/admin."""
 
@@ -335,7 +334,6 @@ class ContactBooking(models.Model):
     
     def __str__(self):
         return f"#{self.pk} - {self.patient.get_full_name()}"
-
 
 class PrimaryOrder(models.Model):
     order_id = models.CharField(max_length=50, blank=True)

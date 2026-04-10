@@ -4,7 +4,7 @@ from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from datetime import timedelta
-import hashlib, random, uuid
+import hashlib, uuid
 
 # ------------------------USER MANAGER-------------------------------
 class CustomUserManager(BaseUserManager):

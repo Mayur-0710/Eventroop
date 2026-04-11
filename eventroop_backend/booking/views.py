@@ -106,10 +106,10 @@ class PatientViewSet(viewsets.ModelViewSet):
     filterset_fields = [
         "gender",
         "blood_group",
-        "payment_mode",
         "registered_by",
         "id_proof",
         "registration_date",
+        "is_registration_fees_paid",
     ]
 
     # Search 

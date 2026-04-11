@@ -142,9 +142,6 @@ class PackageSerializer(serializers.ModelSerializer):
             "belongs_to_type",
         ]
 
-from rest_framework import serializers
-from .models import ContactBooking
-
 class ContactBookingSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.get_full_name",read_only=True)
     mobile_number = serializers.CharField(source="booked_by.mobile_number",read_only=True)

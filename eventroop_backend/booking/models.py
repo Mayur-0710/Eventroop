@@ -146,17 +146,7 @@ class Patient(models.Model):
         ('voter-id', 'Voter ID'),
         ('other', 'Other'),
     ]
-    
-    PAYMENT_MODE_CHOICES = [
-        ('cash', 'Cash'),
-        ('credit-card', 'Credit Card'),
-        ('debit-card', 'Debit Card'),
-        ('net-banking', 'Net Banking'),
-        ('upi', 'UPI'),
-        ('cheque', 'Cheque'),
-        ('bank-transfer', 'Bank Transfer'),
-    ]
-    
+      
     # Validators
     phone_regex = RegexValidator(
         regex=r'^\d{10}$',
@@ -221,21 +211,8 @@ class Patient(models.Model):
         validators=[MinValueValidator(1950), MaxValueValidator(timezone.localtime().year)]
     )
     
-    # Payment Information
-    registration_fee = models.DecimalField(max_digits=10, decimal_places=2, default=5000.00)
-    advance_payment = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        validators=[MinValueValidator(0), MaxValueValidator(100000)]
-    )
-    payment_mode = models.CharField(
-        max_length=20,
-        choices=PAYMENT_MODE_CHOICES,
-        null=True,
-        blank=True
-    )
+    is_registration_fees_paid = models.BooleanField(default=False)
+
     registration_date = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

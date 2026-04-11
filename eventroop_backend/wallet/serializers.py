@@ -28,7 +28,7 @@ class WalletSerializer(serializers.ModelSerializer):
     user_name = serializers.CharField(source='user.get_full_name', read_only=True)
     user_email = serializers.CharField(source='user.email', read_only=True)
     transactions = WalletTransactionSerializer(
-        source='transactions',
+        source="TRANSFER",
         many=True,
         read_only=True,
         required=False

@@ -4,7 +4,7 @@ from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from datetime import timedelta
-import hashlib, uuid
+import hashlib,random, uuid
 
 # ------------------------USER MANAGER-------------------------------
 class CustomUserManager(BaseUserManager):
@@ -377,9 +377,8 @@ class PasswordResetOTP(models.Model):
         """
         cls.objects.filter(user=user, is_used=False).update(is_used=True)
 
-        # raw = f"{random.SystemRandom().randint(0, 999999):06d}"
+        raw = f"{random.SystemRandom().randint(0, 999999):06d}"
         
-        raw = f"{000000:06d}" #TODO:remove after Twilio integration 
         cls.objects.create(user=user, otp=hashlib.sha256(raw.encode()).hexdigest())
         return raw
 

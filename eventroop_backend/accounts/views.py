@@ -105,8 +105,7 @@ class RequestPasswordResetOTPView(APIView):
         # Generate and store new OTP
         raw_otp = PasswordResetOTP.generate(user)
         
-        #TODO:Uncomment after Twilio integration 
-        # send_otp(channel=channel, user=user, raw_otp=raw_otp)
+        send_otp(channel=channel, user=user, raw_otp=raw_otp)
     
         return Response(
             {"message": f"OTP on {channel} sent successfully"},

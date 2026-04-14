@@ -89,7 +89,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
 
     filterset_fields = {
         "is_active": ["exact"],
-        "service_type": ["iexact"],
+        "service_type": ["exact"],
         "venue": ["exact"],
         "venue__location": ["exact"],
         "manager": ["exact"],

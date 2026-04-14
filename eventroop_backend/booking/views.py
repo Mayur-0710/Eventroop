@@ -15,6 +15,7 @@ from django.utils.dateparse import parse_datetime
 from datetime import datetime, time, date
 from itertools import groupby
 from django.db.models import Sum,Count,Q
+from django.shortcuts import get_object_or_404
 
 class PublicVenueViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -376,67 +377,71 @@ class OrderViewSet(viewsets.ModelViewSet):
     # ── Create ─────────────────────────────────────────────────────────────────
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        """
-        Create a new PrimaryOrder.
-
-        Two modes based on payload:
-
-        Mode 1 — Full range (start_datetime + end_datetime only):
-            SecondaryOrders are auto-generated for every period in the full range.
-            {
-                "patient": 1,
-                "venue": 2,
-                "package": 3,
-                "start_datetime": "2026-03-01T00:00:00Z",
-                "end_datetime": "2026-05-31T23:59:59Z"
-            }
-
-        Mode 2 — Specific dates (DAILY package → list, HOURLY package → dict):
-            Only the provided dates/slots get SecondaryOrders.
-            DAILY:
-            {
-                "patient": 1,
-                "venue": 2,
-                "package": 3,
-                "dates": ["2026-03-01", "2026-03-05", "2026-03-10"]
-            }
-            HOURLY:
-            {
-                "patient": 1,
-                "venue": 2,
-                "package": 3,
-                "dates": {
-                    "2026-03-01": ["09:00:00", "10:00:00", "11:00:00"],
-                    "2026-03-05": ["14:00:00", "15:00:00"]
-                }
-            }
-        """
         raw_dates = request.data.get('dates')
-        print(f"raw_dates:{raw_dates}")
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         serializer.validated_data['user'] = request.user
-        
+
+        # Handle dates → set start & end
         if raw_dates:
             date_keys = list(raw_dates.keys()) if isinstance(raw_dates, dict) else raw_dates
             parsed_dates = [date.fromisoformat(d) for d in date_keys]
-            serializer.validated_data['start_datetime'] = timezone.make_aware(datetime.combine(min(parsed_dates), time.min))
-            serializer.validated_data['end_datetime'] = timezone.make_aware(datetime.combine(max(parsed_dates), time.max))
+
+            serializer.validated_data['start_datetime'] = timezone.make_aware(
+                datetime.combine(min(parsed_dates), time.min)
+            )
+            serializer.validated_data['end_datetime'] = timezone.make_aware(
+                datetime.combine(max(parsed_dates), time.max)
+            )
+
         primary_order = serializer.save()
-            
-        # ── Decide generation mode ────────────────────────────────────────────
+
+        patient = primary_order.patient
+        user = request.user
+
+        # STEP 1: REGISTRATION FEES CHECK
+        if not patient.is_registration_fees_paid:
+
+            SecondaryOrder.objects.create(
+                primary_order=primary_order,
+                start_datetime=primary_order.start_datetime,
+                end_datetime=primary_order.start_datetime,
+                subtotal=Decimal("5000.00"),  # or dynamic
+                status=BookingStatus.DRAFT
+            )
+
+            # Put order in Draft for approval
+            primary_order.status = BookingStatus.DRAFT
+            primary_order.save(update_fields=["status"])
+
+            return Response(
+                {"message": "Registration fee required. Order moved to ."},
+                status=status.http_301
+            )
+
+        # STEP 2: CUSTOMER APPROVAL FLOW
+        if user.is_customer:
+            primary_order.status = BookingStatus.DRAFT
+            primary_order.save(update_fields=["status"])
+
+            return Response(
+                {"message": "Order sent for approval."},
+                status=status.HTTP_201_CREATED
+            )
+
+        # STEP 3: OWNER DIRECT BOOKING
         try:
             if raw_dates:
-                # Mode 2: specific dates / slots
-                parsed = self.parse_dates(primary_order.package.period,raw_dates)
+                parsed = self.parse_dates(primary_order.package.period, raw_dates)
                 primary_order.generate_secondary_from_random_dates(parsed)
             else:
-                # Mode 1: full range (start_datetime + end_datetime required by serializer)
                 primary_order.generate_secondary_full_range_dates()
+
         except ValidationError as e:
             return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
-        
+
         response_serializer = PrimaryOrderSerializer(primary_order)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
     
@@ -846,6 +851,15 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer    = PrimaryOrderSerializer(primary_order)
         return Response(serializer.data)
 
+    @action(detail=False, methods=["get"], url_path="pending-approvals")
+    def pending_approvals(self, request):
+        """
+        List all orders that require approval (DRAFT).
+        """
+        queryset = self.get_queryset().filter(status=BookingStatus.DRAFT)
+
+        serializer = PrimaryOrderSerializer(queryset, many=True)
+        return Response(serializer.data)
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -889,6 +903,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"package": f"Unsupported period type: {period_type}"}
             )
+
 
 class TotalInvoiceViewSet(viewsets.ModelViewSet):
     """
@@ -1168,4 +1183,4 @@ class PaymentViewSet(viewsets.ModelViewSet):
         serializer = PaymentSerializer(verified_payments, many=True)
         return Response(serializer.data)
     
-    
+      

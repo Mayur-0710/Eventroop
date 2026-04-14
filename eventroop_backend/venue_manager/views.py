@@ -134,6 +134,11 @@ class ServiceViewSet(viewsets.ModelViewSet):
             instance.soft_delete()
         else:
             instance.delete()
+    
+    @action(detail=False, methods=["get"])
+    def service_dropdown(self,request):
+        queryset = self.filter_queryset(self.get_queryset())
+        return Response(ServiceDropdownSerializer(queryset,many=True).data)
 
 class EntityAssignUsersAPI(views.APIView):
     permission_classes = [IsAuthenticated, CanAssignUsers]

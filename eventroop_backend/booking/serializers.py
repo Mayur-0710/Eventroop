@@ -335,12 +335,10 @@ class PrimaryOrderSerializer(serializers.ModelSerializer):
     )
     service_name = serializers.CharField(
         source='service.name',
-        read_only=True,
         allow_null=True,
     )
     package_name = serializers.CharField(
         source='package.name',
-        read_only=True,
         allow_null=True,
     )
     patient      = PatientMiniSerializer(read_only=True)

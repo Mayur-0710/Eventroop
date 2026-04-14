@@ -294,7 +294,7 @@ class PackageViewSet(viewsets.ModelViewSet):
 
         # CASE 1 → Only content_type → return entities (Service + Venue)
         if not object_id:
-            queryset = Model.objects.filter(owner=request.user, is_active=True)
+            queryset = Model.objects.filter(owner=request.user)
 
             data = queryset.values("id", "name")
 
@@ -304,7 +304,6 @@ class PackageViewSet(viewsets.ModelViewSet):
         try:
             obj = Model.objects.get(
                 id=object_id,
-                is_active=True,
             )
         except Model.DoesNotExist:
             return Response(

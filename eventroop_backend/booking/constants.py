@@ -17,7 +17,7 @@ class BookingEntity(models.TextChoices):
     RESOURCE = "RESOURCE", "Resource"
 
 class BookingStatus(models.TextChoices):
-    DRAFT = 'DRAFT', 'Draft'
+    LOBBY = 'LOBBY', 'Lobby'
     HOLD = 'HOLD', 'Hold'
     BOOKED = 'BOOKED', 'Booked'
     DELAYED = 'DELAYED', 'Delayed'
@@ -31,7 +31,7 @@ class BookingStatus(models.TextChoices):
     RESCHEDULED = 'RESCHEDULED', 'Rescheduled'
 
 MANUAL_STATUS_TRANSITIONS = {
-    BookingStatus.DRAFT: [
+    BookingStatus.LOBBY: [
         BookingStatus.BOOKED,
         BookingStatus.CANCELLED,
     ],

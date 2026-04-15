@@ -40,7 +40,7 @@ def calculate_amount(startdate, enddate, package):
     
 def auto_update_status(start_datetime,end_datetime):
     now = timezone.now()
-    status =  BookingStatus.DRAFT
+    status =  BookingStatus.LOBBY
     if now < start_datetime:
         status = BookingStatus.YET_TO_START
     elif start_datetime <= now <= end_datetime:
@@ -54,7 +54,7 @@ def bulk_update_status(queryset, model):
     orders = queryset.filter(
         status_locked=False
     ).exclude(
-        status__in=[BookingStatus.CANCELLED, BookingStatus.DRAFT]
+        status__in=[BookingStatus.CANCELLED, BookingStatus.LOBBY]
     )
 
     to_update = []

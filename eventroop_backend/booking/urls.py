@@ -18,4 +18,6 @@ router.register(r"bookings", OrderViewSet, basename="bookings")
 router.register(r"invoices", TotalInvoiceViewSet, basename="invoices")
 router.register(r"payments", PaymentViewSet, basename="payments")
 
+router.register(r'lobby', LobbyOrderViewSet, basename='lobby-order')
+
 urlpatterns = router.urls

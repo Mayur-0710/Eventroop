@@ -614,4 +614,17 @@ class InvoiceSummarySerializer(serializers.Serializer):
     partially_paid_count  = serializers.IntegerField()
     paid_count            = serializers.IntegerField()
 
-    
+class LobbyActionSerializer(serializers.Serializer):
+    """
+    Serializer for rejection action.
+    """
+    reason = serializers.CharField(
+        required=False,
+        max_length=500,
+        help_text="Required reason for rejection"
+    )
+    notify_customer = serializers.BooleanField(
+        required=False,
+        default=True,
+        help_text="Whether to notify customer of rejection"
+    )

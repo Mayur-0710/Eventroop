@@ -360,7 +360,7 @@ class PrimaryOrder(models.Model):
     status = models.CharField(
         max_length=25,
         choices=BookingStatus.choices,
-        default=BookingStatus.DRAFT,
+        default=BookingStatus.LOBBY,
         db_index=True,
     )
     status_locked = models.BooleanField(default=False)
@@ -648,7 +648,7 @@ class SecondaryOrder(models.Model):
     status = models.CharField(
         max_length=25,
         choices=BookingStatus.choices,
-        default=BookingStatus.DRAFT,
+        default=BookingStatus.LOBBY,
         db_index=True,
     )
     is_registration_fee = models.BooleanField(default=False, db_index=True)
@@ -753,7 +753,7 @@ class TernaryOrder(models.Model):
     status = models.CharField(
         max_length=25,
         choices=BookingStatus.choices,
-        default=BookingStatus.DRAFT,
+        default=BookingStatus.LOBBY,
         db_index=True,
     )
     status_locked = models.BooleanField(default=False)
@@ -1028,3 +1028,4 @@ class Payment(models.Model):
 
     def unverify(self) -> bool:
         return self._set_verified(False)
+

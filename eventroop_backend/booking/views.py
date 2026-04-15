@@ -16,7 +16,8 @@ from datetime import datetime, time, date
 from itertools import groupby
 from django.db.models import Sum,Count,Q
 from django.shortcuts import get_object_or_404
-
+from django.core.mail import send_mail
+from django.conf import settings
 class PublicVenueViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Single API for:
@@ -345,7 +346,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         user = self.request.user
         queryset = PrimaryOrder.objects.select_related(
             'patient', 'venue', 'service', 'package', 'user'
-        ).prefetch_related('secondary_orders__ternary_orders')
+        ).prefetch_related('secondary_orders__ternary_orders').exclude(status=BookingStatus.LOBBY)
         
         if user.is_customer:
             queryset = queryset.filter(Q(patient__registered_by=user)|Q(user=user))
@@ -365,10 +366,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         if service_id:
             queryset = queryset.filter(service=service_id)
 
-        if self.action == 'pending_approvals':
-            queryset = queryset.filter(status=BookingStatus.DRAFT)
-        else:
-            queryset = queryset.exclude(status=BookingStatus.DRAFT)
         return queryset
 
     # ── Serializer ─────────────────────────────────────────────────────────────
@@ -413,11 +410,11 @@ class OrderViewSet(viewsets.ModelViewSet):
                 end_datetime=primary_order.start_datetime,
                 subtotal=primary_order.package.registration_fees,
                 is_registration_fee=True,
-                status=BookingStatus.DRAFT
+                status=BookingStatus.LOBBY
             )
 
-            # Put order in Draft for approval
-            primary_order.status = BookingStatus.DRAFT
+            # Put order in LOBBY for approval
+            primary_order.status = BookingStatus.LOBBY
             primary_order.save(update_fields=["status"])
 
             return Response(
@@ -427,7 +424,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         # STEP 2: CUSTOMER APPROVAL FLOW
         if user.is_customer:
-            primary_order.status = BookingStatus.DRAFT
+            primary_order.status = BookingStatus.LOBBY
             primary_order.save(update_fields=["status"])
 
             return Response(
@@ -855,96 +852,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer    = PrimaryOrderSerializer(primary_order)
         return Response(serializer.data)
 
-    @action(detail=False, methods=["get"], url_path="pending-approvals")
-    def pending_approvals(self, request):
-        """
-        List all orders that require approval (DRAFT).
-        """
-        queryset = self.get_queryset().filter(status=BookingStatus.DRAFT)
-
-        serializer = PrimaryOrderSerializer(queryset, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=True, methods=["post"], url_path="reject")
-    @transaction.atomic
-    def reject(self, request, pk=None):
-        """
-        Reject an order.
-        """
-        primary_order = self.get_object()
-
-        if primary_order.status != BookingStatus.DRAFT:
-            return Response(
-                {"error": "Order cannot be rejected"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        reason = request.data.get("reason", "Rejected by admin")
-
-        primary_order.status = BookingStatus.CANCELLED
-        primary_order.save(update_fields=["status"])
-
-        return Response(
-            {"message": "Order rejected successfully", "reason": reason},
-            status=status.HTTP_200_OK
-        )
-    
-    @action(detail=True, methods=["post"], url_path="hold")
-    @transaction.atomic
-    def hold(self, request, pk=None):
-        """
-        an order on Hold.
-        """
-        primary_order = self.get_object()
-
-        if primary_order.status != BookingStatus.DRAFT:
-            return Response(
-                {"error": "Order cannot be on Hold"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        reason = request.data.get("reason", "Puted on Hold by admin")
-
-        primary_order.status = BookingStatus.HOLD
-        primary_order.save(update_fields=["status"])
-
-        return Response(
-            {"message": "Order Holded successfully", "reason": reason},
-            status=status.HTTP_200_OK
-        )
-    
-    @action(detail=True, methods=["post"], url_path="approve")
-    @transaction.atomic
-    def approve(self, request, pk=None):
-        """
-        Approve a PrimaryOrder and generate SecondaryOrders.
-        """
-
-        primary_order = self.get_object()
-
-        if primary_order.status != BookingStatus.DRAFT:
-            return Response(
-                {"error": "Order is not pending approval"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        raw_dates = request.data.get("dates")
-
-        try:
-            if raw_dates:
-                parsed = self.parse_dates(primary_order.package.period, raw_dates)
-                primary_order.generate_secondary_from_random_dates(parsed)
-            else:
-                primary_order.generate_secondary_full_range_dates()
-
-        except ValidationError as e:
-            return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response(
-            {"message": "Order approved successfully"},
-            status=status.HTTP_200_OK
-        )
-    
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -988,7 +895,6 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"package": f"Unsupported period type: {period_type}"}
             )
-
 
 class TotalInvoiceViewSet(viewsets.ModelViewSet):
     """
@@ -1268,4 +1174,213 @@ class PaymentViewSet(viewsets.ModelViewSet):
         serializer = PaymentSerializer(verified_payments, many=True)
         return Response(serializer.data)
     
+class LobbyOrderViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing orders in LOBBY status (pending approval).
+    
+    Endpoints:
+    - GET /api/lobby/ - List all LOBBY orders
+    - GET /api/lobby/{id}/ - Get LOBBY order details
+    - POST /api/lobby/{id}/approve/ - Approve an order
+    - POST /api/lobby/{id}/reject/ - Reject an order
+    - POST /api/lobby/{id}/hold/ - Put an order on hold
+    - GET /api/lobby/stats/summary/ - Get LOBBY statistics
+    """
+    serializer_class = PrimaryOrderSerializer
+    search_fields = [
+        'patient__first_name',
+        'patient__last_name',
+        'booking_entity',
+        'user__email',
+        'user__first_name'
+    ]
+    
+    filterset_fields = {
+        'patient': ['exact'],
+        'package': ['exact'],
+        'created_at': ['gte', 'lte'],
+        'booking_type': ['exact'],
+        'service': ['exact'],
+    }
+    
+    ordering_fields = ['created_at', 'user', 'patient', 'package']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = PrimaryOrder.objects.select_related(
+            'patient', 'venue', 'service', 'package', 'user'
+        ).prefetch_related('secondary_orders__ternary_orders').filter(status=BookingStatus.LOBBY)
+        
+        if user.is_customer:
+            queryset = queryset.filter(Q(patient__registered_by=user)|Q(user=user))
+
+        service_id = self.request.query_params.get('service_id')
+        if service_id:
+            queryset = queryset.filter(service=service_id)
+
+        return queryset
+    
+    # ── Custom Actions ────────────────────────────────────────────────────────
+    @action(detail=True, methods=['post'], url_path='approve')
+    @transaction.atomic
+    def approve(self, request, pk=None):
+        primary_order = self.get_object()
+
+        if primary_order.status not in (BookingStatus.LOBBY,BookingStatus.HOLD):
+            return Response(
+                {"error": "Order is not pending approval"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = LobbyActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        reason = serializer.validated_data.get("reason", "Order approved")
+        notify = serializer.validated_data.get("notify_customer", False)
+
+        raw_dates = request.data.get("dates")
+
+        try:
+            if raw_dates:
+                parsed = self._parse_dates(primary_order.package.period, raw_dates)
+                primary_order.generate_secondary_from_random_dates(parsed)
+            else:
+                primary_order.generate_secondary_full_range_dates()
+
+            if notify:
+                self._notify_customer(primary_order, "approved", reason)
+
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to approve order: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response({"message": "Order approved successfully"})
+    
+    @action(detail=True, methods=['post'], url_path='reject')
+    @transaction.atomic
+    def reject(self, request, pk=None):
+        primary_order = self.get_object()
+
+        if primary_order.status != BookingStatus.LOBBY:
+            return Response(
+                {"error": "Order cannot be rejected"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = LobbyActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        reason = serializer.validated_data["reason"]
+        notify = serializer.validated_data.get("notify_customer", True)
+
+        primary_order.status = BookingStatus.CANCELLED
+        primary_order.save(update_fields=["status"])
+
+        if notify:
+            self._notify_customer(primary_order, "rejected", reason)
+
+        return Response({"message": "Order rejected successfully"})
+    
+    @action(detail=True, methods=['post'], url_path='hold')
+    @transaction.atomic
+    def hold(self, request, pk=None):
+        primary_order = self.get_object()
+
+        if primary_order.status != BookingStatus.LOBBY:
+            return Response(
+                {"error": "Order cannot be put on hold"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = LobbyActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        reason = serializer.validated_data["reason"]
+        notify = serializer.validated_data.get("notify_customer", True)
+
+        hold_until = request.data.get("hold_until")
+
+        primary_order.status = BookingStatus.HOLD
+        primary_order.hold_reason = reason
+        primary_order.hold_until = hold_until
+        primary_order.save(update_fields=["status", "hold_reason", "hold_until"])
+
+        if notify:
+            self._notify_customer(primary_order, "held", reason)
+
+        return Response({"message": "Order put on hold successfully"})
+    
+    # ── Helper Methods ────────────────────────────────────────────────────────
+    
+    def _parse_dates(self, period, raw_dates):
+        """Parse and validate dates for secondary order generation."""
+        from datetime import datetime
+        parsed = []
+        for date_str in raw_dates:
+            try:
+                parsed.append(datetime.fromisoformat(date_str).date())
+            except ValueError:
+                raise ValidationError(f"Invalid date format: {date_str}")
+        return parsed
       
+    def _notify_customer(self, order, action_type, details):
+        """
+        Send email notification to customer about order status change.
+        """
+
+        if not order.user or not order.user.email:
+            return
+
+        customer_name = f"{order.user.first_name} {order.user.last_name}".strip() or "Customer"
+        order_id = order.id
+
+        # Subject mapping
+        subject_map = {
+            "approved": "Your Order Has Been Approved ✅",
+            "rejected": "Your Order Has Been Rejected ❌",
+            "held": "Your Order is On Hold ⏳",
+            "unholded": "Your Order Has Been Resumed 🔄",
+        }
+
+        subject = subject_map.get(action_type, "Order Update")
+
+        # Email message
+        message = f"""
+    Hi {customer_name},
+
+    We would like to inform you about an update on your order.
+
+    Order ID: {order_id}
+    Status: {action_type.upper()}
+
+    Details:
+    {details}
+
+    """
+
+        # Add custom messages per action
+        if action_type == "approved":
+            message += "Your booking has been successfully approved and scheduled.\n"
+        elif action_type == "rejected":
+            message += "Unfortunately, your order has been rejected.\n"
+        elif action_type == "held":
+            message += "Your order is currently on hold. Our team will review it shortly.\n"
+        elif action_type == "unholded":
+            message += "Your order has been resumed and is back in processing.\n"
+
+        message += "\nIf you have any questions, please contact our support team.\n\n"
+        message += "Thank you,\nYour Team"
+
+        try:
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[order.user.email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            print(f"Email sending failed: {str(e)}")

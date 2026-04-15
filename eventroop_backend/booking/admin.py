@@ -166,7 +166,7 @@ class PrimaryOrderAdmin(admin.ModelAdmin):
     @admin.display(description="Status")
     def status_badge(self, obj):
         colors = {
-            "DRAFT": "#9ca3af",
+            "LOBBY": "#9ca3af",
             "UPCOMING": "#3b82f6",
             "ONGOING": "#f59e0b",
             "COMPLETED": "#10b981",
@@ -236,7 +236,7 @@ class SecondaryOrderAdmin(admin.ModelAdmin):
     @admin.display(description="Status")
     def status_badge(self, obj):
         colors = {
-            "DRAFT": "#9ca3af", "UPCOMING": "#3b82f6",
+            "LOBBY": "#9ca3af", "UPCOMING": "#3b82f6",
             "ONGOING": "#f59e0b", "COMPLETED": "#10b981",
             "CANCELLED": "#ef4444",
         }
@@ -299,7 +299,7 @@ class TernaryOrderAdmin(admin.ModelAdmin):
     @admin.display(description="Status")
     def status_badge(self, obj):
         colors = {
-            "DRAFT": "#9ca3af", "UPCOMING": "#3b82f6",
+            "LOBBY": "#9ca3af", "UPCOMING": "#3b82f6",
             "ONGOING": "#f59e0b", "COMPLETED": "#10b981",
             "CANCELLED": "#ef4444",
         }

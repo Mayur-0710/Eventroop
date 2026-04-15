@@ -302,6 +302,7 @@ class SecondaryOrderSerializer(serializers.ModelSerializer):
             'end_datetime',
             'subtotal',
             'status',
+            'is_registration_fee',
             'ternary_orders',
             'created_at',
             'updated_at',

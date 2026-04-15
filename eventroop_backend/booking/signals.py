@@ -45,16 +45,6 @@ def secondary_saved(sender, instance, created, **kwargs):
     transaction.on_commit(_update)
 
 
-@receiver(post_delete, sender=SecondaryOrder)
-def secondary_deleted(sender, instance, **kwargs):
-
-    def _update():
-        if instance.primary_order_id:
-            instance.primary_order.recalculate_total()
-
-    transaction.on_commit(_update)
-
-
 @receiver(post_save, sender=TernaryOrder)
 def ternary_saved(sender, instance, created, **kwargs):
 

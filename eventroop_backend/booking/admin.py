@@ -32,7 +32,7 @@ class PackageAdmin(admin.ModelAdmin):
 # Patient
 @admin.register(Patient)
 class PatientAdmin(admin.ModelAdmin):
-    list_display = ("patient_id", "first_name", "last_name", "phone", "gender", "registration_date")
+    list_display = ("patient_id", "first_name", "last_name", "phone", "gender", "registration_date","is_registration_fees_paid")
     list_filter = ("gender", "blood_group", "registration_date")
     search_fields = ("patient_id", "first_name", "last_name", "phone", "email")
     autocomplete_fields = ("registered_by",)
@@ -49,7 +49,7 @@ class SecondaryOrderInline(admin.TabularInline):
     )
     fields = (
         "order_id", "start_datetime", "end_datetime",
-        "subtotal", "status", "created_at",
+        "subtotal", "is_registration_fee", "status", "created_at",
     )
     show_change_link = True
     can_delete = False

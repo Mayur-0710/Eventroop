@@ -83,6 +83,7 @@ class Package(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    registration_fees = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     package_type = models.CharField(
         max_length=20,
         choices=BookingType.choices,
@@ -650,6 +651,7 @@ class SecondaryOrder(models.Model):
         default=BookingStatus.DRAFT,
         db_index=True,
     )
+    is_registration_fee = models.BooleanField(default=False, db_index=True)
     status_locked = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)

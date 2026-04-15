@@ -204,7 +204,7 @@ class PackageViewSet(viewsets.ModelViewSet):
     serializer_class = PackageSerializer
     filterset_fields = ['package_type', 'is_active', 'owner', 'content_type__model']
     search_fields = ['name', 'description']
-    ordering_fields = ['created_at', 'price', 'name']
+    ordering_fields = ['created_at', 'price', 'name', 'registration_fees']
     ordering = ['-created_at']
 
     def get_serializer_class(self):
@@ -365,6 +365,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         if service_id:
             queryset = queryset.filter(service=service_id)
 
+        if self.action == 'pending_approvals':
+            queryset = queryset.filter(status=BookingStatus.DRAFT)
+        else:
+            queryset = queryset.exclude(status=BookingStatus.DRAFT)
         return queryset
 
     # ── Serializer ─────────────────────────────────────────────────────────────
@@ -407,7 +411,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                 primary_order=primary_order,
                 start_datetime=primary_order.start_datetime,
                 end_datetime=primary_order.start_datetime,
-                subtotal=Decimal("5000.00"),  # or dynamic
+                subtotal=primary_order.package.registration_fees,
+                is_registration_fee=True,
                 status=BookingStatus.DRAFT
             )
 
@@ -417,7 +422,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
             return Response(
                 {"message": "Registration fee required. Order moved to ."},
-                status=status.http_301
+                status=status.HTTP_200_OK
             )
 
         # STEP 2: CUSTOMER APPROVAL FLOW
@@ -859,6 +864,87 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         serializer = PrimaryOrderSerializer(queryset, many=True)
         return Response(serializer.data)
+    
+    @action(detail=True, methods=["post"], url_path="reject")
+    @transaction.atomic
+    def reject(self, request, pk=None):
+        """
+        Reject an order.
+        """
+        primary_order = self.get_object()
+
+        if primary_order.status != BookingStatus.DRAFT:
+            return Response(
+                {"error": "Order cannot be rejected"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        reason = request.data.get("reason", "Rejected by admin")
+
+        primary_order.status = BookingStatus.CANCELLED
+        primary_order.save(update_fields=["status"])
+
+        return Response(
+            {"message": "Order rejected successfully", "reason": reason},
+            status=status.HTTP_200_OK
+        )
+    
+    @action(detail=True, methods=["post"], url_path="hold")
+    @transaction.atomic
+    def hold(self, request, pk=None):
+        """
+        an order on Hold.
+        """
+        primary_order = self.get_object()
+
+        if primary_order.status != BookingStatus.DRAFT:
+            return Response(
+                {"error": "Order cannot be on Hold"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        reason = request.data.get("reason", "Puted on Hold by admin")
+
+        primary_order.status = BookingStatus.HOLD
+        primary_order.save(update_fields=["status"])
+
+        return Response(
+            {"message": "Order Holded successfully", "reason": reason},
+            status=status.HTTP_200_OK
+        )
+    
+    @action(detail=True, methods=["post"], url_path="approve")
+    @transaction.atomic
+    def approve(self, request, pk=None):
+        """
+        Approve a PrimaryOrder and generate SecondaryOrders.
+        """
+
+        primary_order = self.get_object()
+
+        if primary_order.status != BookingStatus.DRAFT:
+            return Response(
+                {"error": "Order is not pending approval"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        raw_dates = request.data.get("dates")
+
+        try:
+            if raw_dates:
+                parsed = self.parse_dates(primary_order.package.period, raw_dates)
+                primary_order.generate_secondary_from_random_dates(parsed)
+            else:
+                primary_order.generate_secondary_full_range_dates()
+
+        except ValidationError as e:
+            return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {"message": "Order approved successfully"},
+            status=status.HTTP_200_OK
+        )
+    
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     @staticmethod

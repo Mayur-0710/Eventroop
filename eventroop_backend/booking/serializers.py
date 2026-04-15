@@ -77,6 +77,7 @@ class PackageCreateSerializer(serializers.ModelSerializer):
             "package_type",
             "period",
             "price",
+            "registration_fees",
             "is_active",
             "object_id",
             "belongs_to_type",
@@ -130,6 +131,7 @@ class PackageSerializer(serializers.ModelSerializer):
             "package_type",
             "period",
             "price",
+            "registration_fees",
             "is_active",
             "object_id",
             "belongs_to_type",
@@ -283,18 +285,10 @@ class SecondaryOrderSerializer(serializers.ModelSerializer):
     """Read serializer for a SecondaryOrder (one period/month slot)."""
 
     ternary_orders = TernaryOrderSerializer(many=True, read_only=True)
-    service_name = serializers.CharField(
-        source='primary_order.service.name',
-        read_only=True,
-        allow_null=True,
-    )
-    package_name = serializers.CharField(
-        source='primary_order.package.name',
-        read_only=True,
-        allow_null=True,
-    )
+   
+    service_name = serializers.SerializerMethodField()
+    package_name = serializers.SerializerMethodField()
     location_locality = serializers.SerializerMethodField()
-
 
     class Meta:
         model = SecondaryOrder
@@ -315,10 +309,25 @@ class SecondaryOrderSerializer(serializers.ModelSerializer):
         read_only_fields = ['id','service_name','package_name','location_locality', 'order_id', 'subtotal', 'created_at', 'updated_at']
     
     def get_location_locality(self, obj):
-        primary_order = obj.primary_order
+        primary_order = obj.primary_order        
         if primary_order.venue:
             return primary_order.venue.location.locality
         return None
+    
+    def get_service_name(self, obj):
+        if obj.is_registration_fee:
+            return "Registration Fees"        
+        elif obj.primary_order.service:
+            return obj.primary_order.service.name
+        else: return None
+        
+    
+    def get_package_name(self, obj):
+        if obj.is_registration_fee:
+            return "Registration Fees"
+        elif obj.primary_order.package:
+            return obj.primary_order.package.name
+        else: return None
     
 class PrimaryOrderSerializer(serializers.ModelSerializer):
     """

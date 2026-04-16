@@ -1314,12 +1314,8 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
         reason = serializer.validated_data["reason"]
         notify = serializer.validated_data.get("notify_customer", True)
 
-        hold_until = request.data.get("hold_until")
-
         primary_order.status = BookingStatus.HOLD
-        primary_order.hold_reason = reason
-        primary_order.hold_until = hold_until
-        primary_order.save(update_fields=["status", "hold_reason", "hold_until"])
+        primary_order.save(update_fields=["status"])
 
         if notify:
             self._notify_customer(primary_order, "held", reason)

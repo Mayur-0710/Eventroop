@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import status,generics
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -14,6 +15,7 @@ from .serializers import (
     AttendanceSerializer,
     AttendanceStatusSerializer,
     AttendanceReportSerializer,
+    AbsentAttendanceSerializer,
 )
 
 class AttendanceStatusViewSet(ModelViewSet):
@@ -140,6 +142,7 @@ class AttendanceView(APIView):
                     status=status.HTTP_201_CREATED
                 )
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
 
 class AttendanceReportView(generics.ListAPIView):
     serializer_class = AttendanceReportSerializer
@@ -190,3 +193,100 @@ class AttendanceReportView(generics.ListAPIView):
 
         if user.is_manager or user.is_vsre_staff:
             return self.queryset.filter(user=user)
+        
+class AbsentAttendanceView(APIView):
+    """
+    POST: Mark multiple existing attendance rows as ABSENT for a given date.
+    This API does NOT create missing attendance rows.
+    Present attendance must already be created by cron.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = AbsentAttendanceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        owner_id = serializer.validated_data["owner_id"]
+        att_date = serializer.validated_data["date"]
+        absentee_ids = serializer.validated_data["absentee_ids"]
+
+        user = request.user
+
+        # Permission checks
+        if not user.is_superuser and not user.is_owner:
+            return Response(
+                {"error": "You do not have permission to mark attendance."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if not user.is_superuser and user.is_owner and user.id != owner_id:
+            return Response(
+                {"error": "You can only mark attendance for your own staff."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        valid_users = CustomUser.objects.filter(
+            id__in=absentee_ids,
+            hierarchy__owner_id=owner_id
+        ).only("id")
+
+        valid_user_ids = list(valid_users.values_list("id", flat=True))
+        invalid_user_ids = [uid for uid in absentee_ids if uid not in valid_user_ids]
+
+        if not valid_user_ids:
+            return Response(
+                {
+                    "success": False,
+                    "message": "No valid staff found for this owner.",
+                    "requested_user_ids": absentee_ids,
+                    "invalid_user_ids": invalid_user_ids,
+                    "updated_count": 0,
+                    "not_marked_user_ids": [],
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            absent_status = AttendanceStatus.objects.get(code="ABSENT", is_active=True)
+        except AttendanceStatus.DoesNotExist:
+            return Response(
+                {"error": "AttendanceStatus with code 'ABSENT' not found."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        existing_user_ids = set(
+            Attendance.objects.filter(
+                user_id__in=valid_user_ids,
+                date=att_date
+            ).values_list("user_id", flat=True)
+        )
+
+        not_marked_user_ids = [uid for uid in valid_user_ids if uid not in existing_user_ids]
+
+        with transaction.atomic():
+            updated_count = Attendance.objects.filter(
+                user_id__in=existing_user_ids,
+                date=att_date
+            ).update(
+                status=absent_status,
+                updated_at=timezone.now()
+            )
+
+        from .signals import update_attendance_report
+        for affected_user in CustomUser.objects.filter(id__in=list(existing_user_ids)):
+            update_attendance_report(affected_user, att_date)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Absent attendance processed successfully.",
+                "owner_id": owner_id,
+                "date": att_date,
+                "requested_user_ids": absentee_ids,
+                "valid_user_ids": valid_user_ids,
+                "invalid_user_ids": invalid_user_ids,
+                "not_marked_user_ids": not_marked_user_ids,
+                "updated_count": updated_count,
+            },
+            status=status.HTTP_200_OK
+        )

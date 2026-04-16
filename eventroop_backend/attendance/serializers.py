@@ -81,3 +81,21 @@ class AttendanceReportSerializer(serializers.ModelSerializer):
         ]
 
         read_only_fields = ["created_at", "updated_at"]
+
+class AbsentAttendanceSerializer(serializers.Serializer):
+    owner_id = serializers.IntegerField(required=True)
+    date = serializers.DateField(required=True)
+    absentee_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=True,
+        allow_empty=False
+    )
+
+    def validate_absentee_ids(self, value):
+        seen = set()
+        cleaned = []
+        for item in value:
+            if item not in seen:
+                seen.add(item)
+                cleaned.append(item)
+        return cleaned

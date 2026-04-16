@@ -620,8 +620,7 @@ class LobbyActionSerializer(serializers.Serializer):
     """
     reason = serializers.CharField(
         required=False,
-        max_length=500,
-        help_text="Required reason for rejection"
+        max_length=500
     )
     notify_customer = serializers.BooleanField(
         required=False,

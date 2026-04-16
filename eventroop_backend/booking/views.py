@@ -439,6 +439,13 @@ class OrderViewSet(viewsets.ModelViewSet):
                 primary_order.generate_secondary_from_random_dates(parsed)
             else:
                 primary_order.generate_secondary_full_range_dates()
+            from .utils import auto_update_status
+            
+            primary_order.status = auto_update_status(
+                primary_order.start_datetime,
+                primary_order.end_datetime
+            )
+            primary_order.save(update_fields=["status"])
 
         except ValidationError as e:
             return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
@@ -1247,6 +1254,12 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
                 primary_order.generate_secondary_from_random_dates(parsed)
             else:
                 primary_order.generate_secondary_full_range_dates()
+            
+            primary_order.status = auto_update_status(
+                primary_order.start_datetime,
+                primary_order.end_datetime
+            )
+            primary_order.save(update_fields=["status"])
 
             if notify:
                 self._notify_customer(primary_order, "approved", reason)

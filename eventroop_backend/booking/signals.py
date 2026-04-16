@@ -1,4 +1,4 @@
-from django.db.models.signals import post_save, post_delete
+from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.db import transaction
 from .models import SecondaryOrder,TernaryOrder, TotalInvoice, BookingStatus, Payment
@@ -7,16 +7,6 @@ from .models import SecondaryOrder,TernaryOrder, TotalInvoice, BookingStatus, Pa
 @receiver(post_save, sender=Payment)
 def update_invoice_on_payment_save(sender, instance, **kwargs):
     """Recalculate invoice when payment is created or updated"""
-    
-    def _recalculate():
-        instance.invoice.recalculate_payments()
-
-    transaction.on_commit(_recalculate)
-
-
-@receiver(post_delete, sender=Payment)
-def update_invoice_on_payment_delete(sender, instance, **kwargs):
-    """Recalculate invoice when payment is deleted"""
     
     def _recalculate():
         instance.invoice.recalculate_payments()
@@ -59,12 +49,3 @@ def ternary_saved(sender, instance, created, **kwargs):
 
     transaction.on_commit(_update)
 
-
-@receiver(post_delete, sender=TernaryOrder)
-def ternary_deleted(sender, instance, **kwargs):
-
-    def _update():
-        if instance.secondary_order_id:
-            instance.secondary_order.recalculate_subtotal()
-
-    transaction.on_commit(_update)

@@ -360,6 +360,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         ).prefetch_related('secondary_orders__ternary_orders')
         .exclude(status__in=(BookingStatus.LOBBY,BookingStatus.HOLD))
         )
+
+        user = self.request.user
+        if user.is_customer:
+            queryset = queryset.filter(user=user)
         
         now = timezone.now()
 

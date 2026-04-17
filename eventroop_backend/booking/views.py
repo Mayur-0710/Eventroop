@@ -1185,6 +1185,7 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
         'booking_entity',
         'user__email',
         'user__first_name'
+        'status'
     ]
     
     filterset_fields = {
@@ -1193,6 +1194,7 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
         'created_at': ['gte', 'lte'],
         'booking_type': ['exact'],
         'service': ['exact'],
+        'status': ['exact'],
     }
     
     ordering_fields = ['created_at', 'user', 'patient', 'package']

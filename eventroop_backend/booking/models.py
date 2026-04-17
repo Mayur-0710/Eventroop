@@ -10,10 +10,91 @@ from decimal import Decimal
 import uuid
 from .constants import *
 # TODO : remove functional auto_update_status from save method
-from .utils import auto_update_status,generate_order_id,calculate_amount
 from datetime import timedelta,datetime, time
 from dateutil.relativedelta import relativedelta
-        
+
+def calculate_amount(startdate, enddate, package):
+    if not startdate or not enddate:
+        raise ValueError("Start date and end date are required")
+
+    if enddate < startdate:
+        raise ValueError("End date must be >= start date")
+
+    # DAILY PACKAGE
+    if package.period == "DAILY":
+        delta = relativedelta(enddate.date(), startdate.date())
+        total_days = delta.days + 1   # include end date
+        return Decimal(total_days) * package.price
+
+    # HOURLY PACKAGE
+    elif package.period == "HOURLY":
+        delta = relativedelta(enddate, startdate)
+
+        total_hours = (
+            delta.days * 24
+            + delta.hours
+            + (1 if delta.minutes > 0 or delta.seconds > 0 else 0)
+        )
+
+        # If start == end (same time), count as 1 hour
+        if total_hours == 0:
+            total_hours = 1
+
+        return Decimal(total_hours) * package.price
+
+    else:
+        raise ValueError(f"Unsupported package type:{package.period}")
+    
+def auto_update_status(start_datetime,end_datetime):
+    now = timezone.now()
+    status =  BookingStatus.LOBBY
+    if now < start_datetime:
+        status = BookingStatus.YET_TO_START
+    elif start_datetime <= now <= end_datetime:
+        status = BookingStatus.IN_PROGRESS
+    elif now > end_datetime:
+        status = BookingStatus.FULFILLED
+    return status
+
+def bulk_update_status(queryset, model):
+    """Reusable helper — filters, computes, bulk updates."""
+    orders = queryset.filter(
+        status_locked=False
+    ).exclude(
+        status__in=[BookingStatus.CANCELLED, BookingStatus.LOBBY]
+    )
+
+    to_update = []
+    for order in orders:
+        new_status = auto_update_status(order.start_datetime, order.end_datetime)
+        if new_status != order.status:
+            order.status = new_status
+            to_update.append(order)
+
+    if to_update:
+        model.objects.bulk_update(to_update, ["status"])
+
+    return len(to_update)
+
+def generate_order_id(instance):
+    if not instance.id:
+        raise ValueError("Instance must be saved before generating order_id")
+
+    # TernaryOrder
+    if hasattr(instance, "secondary_order") and instance.secondary_order:
+        secondary = instance.secondary_order
+        primary = instance.secondary_order.primary_order
+        return f"#{primary.id:03}{secondary.id:03}{instance.id:03}"
+
+    # SecondaryOrder
+    if hasattr(instance, "primary_order") and instance.primary_order:
+        primary = instance.primary_order
+        return f"#{primary.id:03}{instance.id:03}000"
+
+    # PrimaryOrder
+    return f"#{instance.id:03}000000"
+
+
 class Location(models.Model):
         
     user = models.ForeignKey(
@@ -345,7 +426,7 @@ class PrimaryOrder(models.Model):
 
     start_datetime = models.DateTimeField(db_index=True)
     end_datetime = models.DateTimeField(db_index=True)
-
+    raw_dates = models.JSONField(null=True, blank=True)
     total_bill = models.DecimalField(
         max_digits=10, decimal_places=2, default=Decimal("0.00"), editable=False
     )
@@ -377,16 +458,7 @@ class PrimaryOrder(models.Model):
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
     def save(self, *args, **kwargs):
-        skip_auto_status = kwargs.pop("skip_auto_status", False)
-        update_fields = kwargs.get("update_fields")
-        is_targeted_save = update_fields is not None
-
-        if not is_targeted_save:
-            if not skip_auto_status:
-                self.status = auto_update_status(self.start_datetime, self.end_datetime)
-
-            self.booking_type = self.package.package_type
-
+        self.booking_type = self.package.package_type
         super().save(*args, **kwargs)
 
         if not self.order_id:

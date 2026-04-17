@@ -378,6 +378,7 @@ class PrimaryOrderSerializer(serializers.ModelSerializer):
             # dates
             'start_datetime',
             'end_datetime',
+            'raw_dates',
             'auto_continue',
             'discount_amount',
             'premium_amount',
@@ -422,16 +423,6 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
     When 'dates' is absent, both datetime fields are required.
     """
 
-    dates = serializers.JSONField(
-        required=False,
-        write_only=True,
-        help_text=(
-            "DAILY: list of YYYY-MM-DD strings. "
-            "HOURLY: dict of {YYYY-MM-DD: [HH:MM:SS, ...]}. "
-            "Omit to use full start_datetime–end_datetime range."
-        ),
-    )
-
     class Meta:
         model = PrimaryOrder
         fields = [
@@ -442,11 +433,12 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
             'booking_type',
             'client_address',
             'start_datetime',
+            'start_datetime',
             'end_datetime',
             'discount_amount',
             'premium_amount',
             'auto_continue',
-            'dates',
+            'raw_dates',
         ]
         extra_kwargs = {
             'service':         {'required': False},
@@ -460,32 +452,23 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         data["booking_entity"] = BookingEntity.SERVICE
-    
-        has_dates      = 'dates' in data
-        start_datetime = data.get('start_datetime')
-        end_datetime   = data.get('end_datetime')
+
+        errors = {}
+        has_dates = 'raw_dates' in data
+        start = data.get('start_datetime')
+        end = data.get('end_datetime')
 
         if not has_dates:
-            # Full-range mode: both datetime fields are mandatory
-            if not start_datetime:
-                raise serializers.ValidationError(
-                    {"start_datetime": "Required when 'dates' is not provided."}
-                )
-            if not end_datetime:
-                raise serializers.ValidationError(
-                    {"end_datetime": "Required when 'dates' is not provided."}
-                )
-            if start_datetime >= end_datetime:
-                raise serializers.ValidationError(
-                    {"start_datetime": "Start datetime must be before end datetime."}
-                )
-        else:
-            # Date-list mode: validate that the provided datetimes are consistent
-            # if someone accidentally sends both (we just ignore start/end in the view).
-            if start_datetime and end_datetime and start_datetime >= end_datetime:
-                raise serializers.ValidationError(
-                    {"start_datetime": "Start datetime must be before end datetime."}
-                )
+            if not start:
+                errors["start_datetime"] = "Required when 'dates' is not provided."
+            if not end:
+                errors["end_datetime"] = "Required when 'dates' is not provided."
+
+        if start and end and start >= end:
+            errors["non_field_errors"] = "Start datetime must be before end datetime."
+
+        if errors:
+            raise serializers.ValidationError(errors)
 
         return data
 
@@ -596,9 +579,9 @@ class TotalInvoiceSerializer(serializers.ModelSerializer):
         
         return {
             "order_id": booking_obj.order_id,
-            "venue": booking_obj.venue.name,
-            "locality": booking_obj.venue.location.locality,
-            "location": booking_obj.venue.location.full_address(),
+            "venue": booking_obj.venue.name if booking_obj.venue else None,
+            "locality": booking_obj.venue.location.locality if booking_obj.venue else None,
+            "location": booking_obj.venue.location.full_address() if booking_obj.venue else None,
             "service": booking_obj.service.name,
             "package": booking_obj.package.name,
         }

@@ -6,8 +6,10 @@ from venue_manager.serializers import (
     ServiceDropdownSerializer
 )
 
-from .utils import auto_update_status
-
+from .utils import (
+    DateParser, OrderQuerySet, SecondaryOrderHelper,
+    PermissionHelper
+)
 from rest_framework import viewsets, permissions, status,pagination
 from .serializers import *
 from .models import *
@@ -15,12 +17,11 @@ from .filters import EntityFilter
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils.dateparse import parse_datetime
-from datetime import datetime, time, date
 from itertools import groupby
 from django.db.models import Sum,Count,Q
-from django.shortcuts import get_object_or_404
 from django.core.mail import send_mail
 from django.conf import settings
+
 class PublicVenueViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Single API for:
@@ -353,14 +354,13 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     # ── Queryset ───────────────────────────────────────────────────────────────
     def get_queryset(self):
-        user = self.request.user
-        queryset = PrimaryOrder.objects.select_related(
+        queryset = (
+            PrimaryOrder.objects.select_related(
             'patient', 'venue', 'service', 'package', 'user'
-        ).prefetch_related('secondary_orders__ternary_orders').exclude(status=BookingStatus.LOBBY)
+        ).prefetch_related('secondary_orders__ternary_orders')
+        .exclude(status__in=(BookingStatus.LOBBY,BookingStatus.HOLD))
+        )
         
-        if user.is_customer:
-            queryset = queryset.filter(Q(patient__registered_by=user)|Q(user=user))
-                
         now = timezone.now()
 
         if self.request.query_params.get('ongoing'):
@@ -372,6 +372,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         if self.request.query_params.get('past_order'):
             queryset = queryset.filter(end_datetime__lt=now)
 
+        # Service filter
         service_id = self.request.query_params.get('service_id')
         if service_id:
             queryset = queryset.filter(service=service_id)
@@ -380,40 +381,41 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     # ── Serializer ─────────────────────────────────────────────────────────────
     def get_serializer_class(self):
-        if self.action in ('create','update'):
+        if self.action in ('create', 'update'):
             return PrimaryOrderCreateSerializer
         return PrimaryOrderSerializer
 
     # ── Create ─────────────────────────────────────────────────────────────────
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        raw_dates = request.data.get('dates')
-
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
         serializer.validated_data['user'] = request.user
+        
+        raw_dates = serializer.validated_data['raw_dates']
 
         # Handle dates → set start & end
         if raw_dates:
-            date_keys = list(raw_dates.keys()) if isinstance(raw_dates, dict) else raw_dates
-            parsed_dates = [date.fromisoformat(d) for d in date_keys]
-
-            serializer.validated_data['start_datetime'] = timezone.make_aware(
-                datetime.combine(min(parsed_dates), time.min)
-            )
-            serializer.validated_data['end_datetime'] = timezone.make_aware(
-                datetime.combine(max(parsed_dates), time.max)
-            )
+            try:
+                parsed_dates = DateParser.parse_dates(
+                    serializer.validated_data['package'].period,
+                    raw_dates
+                )
+                start_dt, end_dt = DateParser.extract_datetime_bounds(
+                    serializer.validated_data['package'].period,
+                    parsed_dates
+                )
+                serializer.validated_data['start_datetime'] = start_dt
+                serializer.validated_data['end_datetime'] = end_dt
+            except ValidationError as e:
+                return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
 
         primary_order = serializer.save()
-
         patient = primary_order.patient
         user = request.user
 
         # STEP 1: REGISTRATION FEES CHECK
         if not patient.is_registration_fees_paid:
-
             SecondaryOrder.objects.create(
                 primary_order=primary_order,
                 start_datetime=primary_order.start_datetime,
@@ -428,7 +430,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             primary_order.save(update_fields=["status"])
 
             return Response(
-                {"message": "Registration fee required. Order moved to ."},
+                {"message": "Registration fee required. Order moved to LOBBY."},
                 status=status.HTTP_200_OK
             )
 
@@ -445,7 +447,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         # STEP 3: OWNER DIRECT BOOKING
         try:
             if raw_dates:
-                parsed = self.parse_dates(primary_order.package.period, raw_dates)
+                parsed = DateParser.parse_dates(
+                    primary_order.package.period,
+                    raw_dates
+                )
                 primary_order.generate_secondary_from_random_dates(parsed)
             else:
                 primary_order.generate_secondary_full_range_dates()
@@ -462,54 +467,55 @@ class OrderViewSet(viewsets.ModelViewSet):
         response_serializer = PrimaryOrderSerializer(primary_order)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
     
-    # ── update ─────────────────────────────────────────────────────────────────
+    # ── Update ─────────────────────────────────────────────────────────────────
     @transaction.atomic
     def update(self, request, *args, **kwargs):
         """
         Update PrimaryOrder and regenerate SecondaryOrders if schedule changes.
         """
-
         instance = self.get_object()
-
         raw_dates = request.data.get("dates")
 
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
 
-        old_start = instance.start_datetime
-        old_end = instance.end_datetime
         old_package = instance.package
 
         # Handle date payload like create()
         if raw_dates:
-            date_keys = list(raw_dates.keys()) if isinstance(raw_dates, dict) else raw_dates
-            parsed_dates = [date.fromisoformat(d) for d in date_keys]
-
-            serializer.validated_data["start_datetime"] = timezone.make_aware(
-                datetime.combine(min(parsed_dates), time.min)
-            )
-            serializer.validated_data["end_datetime"] = timezone.make_aware(
-                datetime.combine(max(parsed_dates), time.max)
-            )
+            try:
+                package = serializer.validated_data.get('package', instance.package)
+                parsed_dates = DateParser.parse_dates(package.period, raw_dates)
+                start_dt, end_dt = DateParser.extract_datetime_bounds(
+                    package.period,
+                    parsed_dates
+                )
+                serializer.validated_data["start_datetime"] = start_dt
+                serializer.validated_data["end_datetime"] = end_dt
+            except ValidationError as e:
+                return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
 
         primary_order = serializer.save()
 
-        schedule_changed =True
-
-        if schedule_changed:
-
-            # Delete old secondary orders
-            primary_order.secondary_orders.all().delete()
+        # Regenerate secondary orders if dates or package changed
+        if raw_dates or 'start_datetime' in request.data or 'end_datetime' in request.data:
             try:
+                # Delete old secondary orders
+                primary_order.secondary_orders.all().delete()
+                
                 if raw_dates:
-                    parsed = self.parse_dates(primary_order.package.period, raw_dates)
+                    parsed = DateParser.parse_dates(
+                        primary_order.package.period,
+                        raw_dates
+                    )
                     primary_order.generate_secondary_from_random_dates(parsed)
                 else:
                     primary_order.generate_secondary_full_range_dates()
+                    
             except ValidationError as e:
                 return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
-        response_serializer = PrimaryOrderSerializer(primary_order)
 
+        response_serializer = PrimaryOrderSerializer(primary_order)
         return Response(response_serializer.data, status=status.HTTP_200_OK)
     
     # ── Add service (TernaryOrder) ──────────────────────────────────────────────
@@ -518,8 +524,6 @@ class OrderViewSet(viewsets.ModelViewSet):
     def add_service(self, request, pk=None):
         """
         Add a service as a TernaryOrder under the appropriate SecondaryOrder.
-
-        The secondary_order is matched by the service's date range (month/year).
 
         Payload:
         {
@@ -536,9 +540,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Permission Check
-        if not (user.is_superuser or primary_order.user == user or 
-                (user.is_owner and primary_order.patient.registered_by.hierarchy.owner == user)):
-             return Response(
+        if not PermissionHelper.can_modify_order(user, primary_order):
+            return Response(
                 {"detail": "You do not have permission to modify this order."},
                 status=status.HTTP_403_FORBIDDEN
             )
@@ -556,23 +559,16 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         start_dt = serializer.validated_data['start_datetime']
-        end_dt   = serializer.validated_data['end_datetime']
+        end_dt = serializer.validated_data['end_datetime']
 
-        # Resolve the matching SecondaryOrder of start_dt
+        # Resolve the matching SecondaryOrder - FIX: Use helper method with proper exception
         try:
-           secondary_order = primary_order.secondary_orders.filter(
-                start_datetime__lte=start_dt,
-                end_datetime__gte=end_dt,
-            ).first()
-        except SecondaryOrder.DoesNotExist:
+            secondary_order = SecondaryOrderHelper.get_matching_secondary_order(
+                primary_order, start_dt, end_dt
+            )
+        except SecondaryOrder.DoesNotExist as e:
             return Response(
-                {
-                    "message": (
-                        f"No secondary order found for "
-                        f"{start_dt.year}-{start_dt.month:02d}. "
-                        "Ensure the service date falls within the booking range."
-                    )
-                },
+                {"message": str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -585,21 +581,34 @@ class OrderViewSet(viewsets.ModelViewSet):
         response_serializer = TernaryOrderSerializer(ternary_order)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
-    # ── Reschedule ─────────────────────────────────────────────────────────────
+    # ── Reschedule Order ───────────────────────────────────────────────────────
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def reschedule_order(self, request, pk=None):
-
+        """
+        Reschedule a PrimaryOrder with new dates/package.
+        
+        Two modes:
+        - Full range: start_datetime + end_datetime
+        - Specific dates: dates (list for DAILY, dict for HOURLY)
+        """
         primary_order = self.get_object()
+        user = request.user
 
-        new_package_id   = request.data.get("package")
-        discount_amount  = Decimal(request.data.get("discount_amount", "0"))
-        premium_amount   = Decimal(request.data.get("premium_amount", "0"))
-        raw_dates        = request.data.get("dates")
+        # FIX: Add missing permission check
+        if not PermissionHelper.can_modify_order(user, primary_order):
+            return Response(
+                {"detail": "You do not have permission to modify this order."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        new_package_id = request.data.get("package")
+        discount_amount = Decimal(request.data.get("discount_amount", "0"))
+        premium_amount = Decimal(request.data.get("premium_amount", "0"))
+        raw_dates = request.data.get("dates")
 
         # Determine package & period type        
         package = primary_order.package
-
         if new_package_id:
             from .models import Package
             package = Package.objects.get(id=new_package_id)
@@ -607,26 +616,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         period_type = package.period
 
         try:
-            # MODE 2 — Specific Dates / Slots
+            # MODE 1: Specific Dates / Slots
             if raw_dates:
                 try:
-                    parsed = self.parse_dates(period_type, raw_dates)
-
-                    if isinstance(parsed, list):  # DAILY
-                        new_start = timezone.make_aware(
-                            datetime.combine(min(parsed), time.min)
-                        )
-                        new_end = timezone.make_aware(
-                            datetime.combine(max(parsed), time.max)
-                        )
-                    else:  # HOURLY
-                        all_dates = list(parsed.keys())
-                        new_start = timezone.make_aware(
-                            datetime.combine(min(all_dates), time.min)
-                        )
-                        new_end = timezone.make_aware(
-                            datetime.combine(max(all_dates), time.max)
-                        )
+                    parsed = DateParser.parse_dates(period_type, raw_dates)
+                    new_start, new_end = DateParser.extract_datetime_bounds(period_type, parsed)
                 except ValidationError as e:
                     return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
 
@@ -644,10 +638,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                 # Generate specific ones
                 primary_order.generate_secondary_from_random_dates(parsed)
 
-            # MODE 1 — Full Range
+            # MODE 2: Full Range
             else:
                 new_start_raw = request.data.get("start_datetime")
-                new_end_raw   = request.data.get("end_datetime")
+                new_end_raw = request.data.get("end_datetime")
 
                 if not new_start_raw or not new_end_raw:
                     raise ValidationError(
@@ -655,7 +649,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     )
 
                 new_start = parse_datetime(new_start_raw)
-                new_end   = parse_datetime(new_end_raw)
+                new_end = parse_datetime(new_end_raw)
 
                 if not new_start or not new_end:
                     raise ValidationError(
@@ -664,7 +658,6 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                 if timezone.is_naive(new_start):
                     new_start = timezone.make_aware(new_start)
-
                 if timezone.is_naive(new_end):
                     new_end = timezone.make_aware(new_end)
 
@@ -677,8 +670,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 )
 
         except ValidationError:
-            raise  # Let DRF handle structured error
-
+            raise
         except Exception as e:
             return Response(
                 {"detail": f"Invalid input: {str(e)}"},
@@ -688,6 +680,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer = PrimaryOrderSerializer(primary_order)
         return Response(serializer.data)
 
+    # ── Reschedule Service ─────────────────────────────────────────────────────
     @action(detail=True, methods=['post'])
     @transaction.atomic
     def reschedule_service(self, request, pk=None):
@@ -705,13 +698,21 @@ class OrderViewSet(viewsets.ModelViewSet):
         }
         """
         primary_order = self.get_object()
+        user = request.user
+
+        # Add permission check for consistency
+        if not PermissionHelper.can_modify_order(user, primary_order):
+            return Response(
+                {"detail": "You do not have permission to modify this order."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         ternary_order_id = request.data.get('ternary_order_id')
-        new_start        = request.data.get('start_datetime')
-        new_end          = request.data.get('end_datetime')
-        new_package      = request.data.get('package')
-        discount_amount  = request.data.get('discount_amount', Decimal('0'))
-        premium_amount   = request.data.get('premium_amount', Decimal('0'))
+        new_start = request.data.get('start_datetime')
+        new_end = request.data.get('end_datetime')
+        new_package = request.data.get('package')
+        discount_amount = request.data.get('discount_amount', Decimal('0'))
+        premium_amount = request.data.get('premium_amount', Decimal('0'))
 
         if not new_start or not new_end:
             return Response(
@@ -732,26 +733,28 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         try:
             new_start_dt = parse_datetime(new_start)
-            new_end_dt   = parse_datetime(new_end)
+            new_end_dt = parse_datetime(new_end)
 
             if not new_start_dt or not new_end_dt:
                 raise ValueError("Invalid datetime format.")
 
             with transaction.atomic():
                 ternary_order.start_datetime = new_start_dt
-                ternary_order.end_datetime   = new_end_dt
+                ternary_order.end_datetime = new_end_dt
 
                 if new_package:
                     ternary_order.package_id = new_package
-                    ternary_order.status  = BookingStatus.MODIFIED
+                    ternary_order.status = BookingStatus.MODIFIED
                 else:
-                    ternary_order.status  = BookingStatus.RESCHEDULED
-                target.status_locked = True
+                    ternary_order.status = BookingStatus.RESCHEDULED
+                
+                # FIX: Changed 'target' to 'ternary_order' (was undefined variable)
+                ternary_order.status_locked = True
 
                 if discount_amount is not None:
                     ternary_order.discount_amount = discount_amount
                 if premium_amount is not None:
-                    ternary_order.premium_amount  = premium_amount
+                    ternary_order.premium_amount = premium_amount
                 
                 ternary_order.save()
 
@@ -761,17 +764,21 @@ class OrderViewSet(viewsets.ModelViewSet):
         except ValidationError as e:
             return Response({"message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except (ValueError, TypeError) as e:
-            return Response({"message": f"Invalid input: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"message": f"Invalid input: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         serializer = TernaryOrderSerializer(ternary_order)
         return Response(serializer.data)
 
-    # ── Status change ──────────────────────────────────────────────────────────
+    # ── Status Change ──────────────────────────────────────────────────────────
 
     @action(detail=True, methods=['patch'])
+    @transaction.atomic
     def change_status(self, request, pk=None):
         """
-        Manually change the status of a PrimaryOrder (and optionally a child TernaryOrder).
+        Manually change the status of a PrimaryOrder and optionally cascade to children.
 
         Payload:
         {
@@ -780,17 +787,31 @@ class OrderViewSet(viewsets.ModelViewSet):
             "ternary_order_id": 5     # optional — targets a specific TernaryOrder
         }
         """
+        primary_order = self.get_object()
+        user = request.user
 
-        primary_order      = self.get_object()
+        # Add permission check
+        if not PermissionHelper.can_modify_order(user, primary_order):
+            return Response(
+                {"detail": "You do not have permission to modify this order."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         secondary_order_id = request.data.get('secondary_order_id')
-        ternary_order_id   = request.data.get('ternary_order_id')
-        new_status         = request.data.get('status')
+        ternary_order_id = request.data.get('ternary_order_id')
+        new_status = request.data.get('status')
 
         if not new_status:
-            return Response({"error": "Status is required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Status is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         if new_status not in BookingStatus.values:
-            return Response({"error": "Invalid status."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Invalid status."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         target = primary_order
 
@@ -801,7 +822,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                     primary_order=primary_order
                 )
             except SecondaryOrder.DoesNotExist:
-                return Response({"error": "Invalid secondary_order_id."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"error": "Invalid secondary_order_id."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
         if ternary_order_id:
             try:
@@ -810,35 +834,23 @@ class OrderViewSet(viewsets.ModelViewSet):
                     secondary_order__primary_order=primary_order
                 )
             except TernaryOrder.DoesNotExist:
-                return Response({"error": "Invalid ternary_order_id."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # available_statuses = MANUAL_STATUS_TRANSITIONS.get(target.status, [])
-        # if new_status not in available_statuses:
-        #     return Response(
-        #         {"error": f"Cannot transition from '{target.status}' to '{new_status}'."},
-        #         status=status.HTTP_400_BAD_REQUEST
-        #     )
+                return Response(
+                    {"error": "Invalid ternary_order_id."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
         with transaction.atomic():
             target.status = new_status
             target.status_locked = True
-            target.save(update_fields=['status','status_locked'])
+            target.save(update_fields=['status', 'status_locked'])
 
-            # If primary order is canceled, force cascade to ALL secondaries and ternaries
-            if target == primary_order and new_status == BookingStatus.CANCELLED:
-                secondary_ids = primary_order.secondary_orders.values_list('id', flat=True)
-                SecondaryOrder.objects.filter(id__in=secondary_ids).update(status=new_status)
-                TernaryOrder.objects.filter(secondary_order_id__in=secondary_ids).update(status=new_status)
-
-            elif secondary_order_id and not ternary_order_id:
-                # Cascade to this secondary's ternary orders only
-                target.ternary_orders.all().update(status=new_status)
-
-            elif not ternary_order_id and not secondary_order_id:
-                # Primary status change (non-cancel): cascade to all children
-                secondary_ids = primary_order.secondary_orders.values_list('id', flat=True)
-                SecondaryOrder.objects.filter(id__in=secondary_ids).update(status=new_status)
-                TernaryOrder.objects.filter(secondary_order_id__in=secondary_ids).update(status=new_status)
+            # Use helper for consistent cascade logic
+            SecondaryOrderHelper.cascade_status_change(
+                primary_order,
+                new_status,
+                specific_secondary_id=secondary_order_id,
+                specific_ternary_id=ternary_order_id
+            )
 
         return Response({
             "message": "Status updated successfully.",
@@ -846,18 +858,19 @@ class OrderViewSet(viewsets.ModelViewSet):
             "new_status": new_status
         }, status=status.HTTP_200_OK)
 
-    # ── Info endpoints ─────────────────────────────────────────────────────────
+    # ── Info Endpoints ────────────────────────────────────────────────────────
+
     @action(detail=False, methods=['get'])
     def by_venue(self, request):
         """List all venue PrimaryOrders with nested secondary/ternary data."""
-        queryset   = self.get_queryset().filter(booking_entity=BookingEntity.VENUE)
+        queryset = self.get_queryset().filter(booking_entity=BookingEntity.VENUE)
         serializer = PrimaryOrderSerializer(queryset, many=True)
         return Response(serializer.data)
 
     @action(detail=False, methods=['get'])
     def by_service(self, request):
         """List all service PrimaryOrders."""
-        queryset   = self.get_queryset().filter(booking_entity=BookingEntity.SERVICE)
+        queryset = self.get_queryset().filter(booking_entity=BookingEntity.SERVICE)
         serializer = PrimaryOrderSerializer(queryset, many=True)
         return Response(serializer.data)
 
@@ -865,52 +878,8 @@ class OrderViewSet(viewsets.ModelViewSet):
     def order_info(self, request, pk=None):
         """Full breakdown of a PrimaryOrder including all secondary and ternary orders."""
         primary_order = self.get_object()
-        serializer    = PrimaryOrderSerializer(primary_order)
+        serializer = PrimaryOrderSerializer(primary_order)
         return Response(serializer.data)
-
-    # ── Helpers ────────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def parse_dates(period_type, raw_dates):
-        """
-        Parse and validate dates for DAILY and HOURLY packages.
-        Returns parsed data or raises ValidationError.
-        """
-        
-        if period_type == PeriodChoices.DAILY:
-
-            if not isinstance(raw_dates, list):
-                raise ValidationError(
-                    {"dates": "For DAILY package, 'dates' must be a list of ISO date strings."}
-                )
-
-            try:
-                return [date.fromisoformat(d) for d in raw_dates]
-            except ValueError:
-                raise ValidationError(
-                    {"dates": "Invalid date format. Use YYYY-MM-DD."}
-                )
-
-        elif period_type == PeriodChoices.HOURLY:
-
-            if not isinstance(raw_dates, dict):
-                raise ValidationError(
-                    {"dates": "For HOURLY package, 'dates' must be a dictionary."}
-                )
-
-            try:
-                return {
-                    date.fromisoformat(d): [time.fromisoformat(t) for t in slots]
-                    for d, slots in raw_dates.items()
-                }
-            except ValueError:
-                raise ValidationError(
-                    {"dates": "Invalid date or time format. Use YYYY-MM-DD and HH:MM:SS."}
-                )
-        else:
-            raise ValidationError(
-                {"package": f"Unsupported period type: {period_type}"}
-            )
 
 class TotalInvoiceViewSet(viewsets.ModelViewSet):
     """
@@ -1202,12 +1171,12 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
     ViewSet for managing orders in LOBBY status (pending approval).
     
     Endpoints:
-    - GET /api/lobby/ - List all LOBBY orders
-    - GET /api/lobby/{id}/ - Get LOBBY order details
-    - POST /api/lobby/{id}/approve/ - Approve an order
-    - POST /api/lobby/{id}/reject/ - Reject an order
-    - POST /api/lobby/{id}/hold/ - Put an order on hold
-    - GET /api/lobby/stats/summary/ - Get LOBBY statistics
+    - GET /booking/lobby/ - List all LOBBY orders
+    - GET /booking/lobby/{id}/ - Get LOBBY order details
+    - POST /booking/lobby/{id}/approve/ - Approve an order
+    - POST /booking/lobby/{id}/reject/ - Reject an order
+    - POST /booking/lobby/{id}/hold/ - Put an order on hold
+    - GET /booking/lobby/stats/summary/ - Get LOBBY statistics
     """
     serializer_class = PrimaryOrderSerializer
     search_fields = [
@@ -1230,13 +1199,12 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
 
     def get_queryset(self):
-        user = self.request.user
-        queryset = PrimaryOrder.objects.select_related(
+        queryset = (
+            PrimaryOrder.objects.select_related(
             'patient', 'venue', 'service', 'package', 'user'
-        ).prefetch_related('secondary_orders__ternary_orders').filter(status__in=(BookingStatus.LOBBY,BookingStatus.HOLD))
-        
-        if user.is_customer:
-            queryset = queryset.filter(Q(patient__registered_by=user)|Q(user=user))
+        ).prefetch_related('secondary_orders__ternary_orders')
+        .filter(status__in=(BookingStatus.LOBBY,BookingStatus.HOLD))
+        )
 
         service_id = self.request.query_params.get('service_id')
         if service_id:
@@ -1245,12 +1213,27 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
         return queryset
     
     # ── Custom Actions ────────────────────────────────────────────────────────
+    
     @action(detail=True, methods=['post'], url_path='approve')
     @transaction.atomic
     def approve(self, request, pk=None):
+        """
+        Approve a LOBBY order and generate secondary orders.
+        
+        Can optionally specify dates (same format as create endpoint):
+        - DAILY: {"dates": ["2026-01-01", "2026-01-02"]}
+        - HOURLY: {"dates": {"2026-01-01": ["10:00:00", "11:00:00"]}}
+        
+        Payload:
+        {
+            "reason": "Approved by admin",
+            "notify_customer": true,
+            "dates": [...]  # optional
+        }
+        """
         primary_order = self.get_object()
 
-        if primary_order.status not in (BookingStatus.LOBBY,BookingStatus.HOLD):
+        if primary_order.status not in (BookingStatus.LOBBY, BookingStatus.HOLD):
             return Response(
                 {"error": "Order is not pending approval"},
                 status=status.HTTP_400_BAD_REQUEST
@@ -1261,16 +1244,22 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
 
         reason = serializer.validated_data.get("reason", "Order approved")
         notify = serializer.validated_data.get("notify_customer", False)
-
-        raw_dates = request.data.get("dates")
+        raw_dates = request.data.get("dates") or primary_order.raw_dates
 
         try:
             if raw_dates:
-                parsed = self._parse_dates(primary_order.package.period, raw_dates)
-                primary_order.generate_secondary_from_random_dates(parsed)
+                try:
+                    parsed = DateParser.parse_dates(
+                        primary_order.package.period,
+                        raw_dates
+                    )
+                    primary_order.generate_secondary_from_random_dates(parsed)
+                except ValidationError as e:
+                    return Response(e.message_dict, status=status.HTTP_400_BAD_REQUEST)
             else:
                 primary_order.generate_secondary_full_range_dates()
             
+            # Update status based on datetime
             primary_order.status = auto_update_status(
                 primary_order.start_datetime,
                 primary_order.end_datetime
@@ -1286,11 +1275,21 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        return Response({"message": "Order approved successfully"})
+        serializer = PrimaryOrderSerializer(primary_order)
+        return Response(serializer.data, status=status.HTTP_200_OK)
     
     @action(detail=True, methods=['post'], url_path='reject')
     @transaction.atomic
     def reject(self, request, pk=None):
+        """
+        Reject a LOBBY order (set to CANCELLED).
+        
+        Payload:
+        {
+            "reason": "Rejection reason",
+            "notify_customer": true
+        }
+        """
         primary_order = self.get_object()
 
         if primary_order.status != BookingStatus.LOBBY:
@@ -1305,17 +1304,28 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
         reason = serializer.validated_data["reason"]
         notify = serializer.validated_data.get("notify_customer", True)
 
-        primary_order.status = BookingStatus.CANCELLED
-        primary_order.save(update_fields=["status"])
+        with transaction.atomic():
+            primary_order.status = BookingStatus.CANCELLED
+            primary_order.save(update_fields=["status"])
 
-        if notify:
-            self._notify_customer(primary_order, "rejected", reason)
+            if notify:
+                self._notify_customer(primary_order, "rejected", reason)
 
-        return Response({"message": "Order rejected successfully"})
+        serializer = PrimaryOrderSerializer(primary_order)
+        return Response(serializer.data, status=status.HTTP_200_OK)
     
     @action(detail=True, methods=['post'], url_path='hold')
     @transaction.atomic
     def hold(self, request, pk=None):
+        """
+        Put a LOBBY order on hold for further review.
+        
+        Payload:
+        {
+            "reason": "Reason for hold",
+            "notify_customer": true
+        }
+        """
         primary_order = self.get_object()
 
         if primary_order.status != BookingStatus.LOBBY:
@@ -1330,32 +1340,80 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
         reason = serializer.validated_data["reason"]
         notify = serializer.validated_data.get("notify_customer", True)
 
-        primary_order.status = BookingStatus.HOLD
-        primary_order.save(update_fields=["status"])
+        with transaction.atomic():
+            primary_order.status = BookingStatus.HOLD
+            primary_order.save(update_fields=["status"])
 
-        if notify:
-            self._notify_customer(primary_order, "held", reason)
+            if notify:
+                self._notify_customer(primary_order, "held", reason)
 
-        return Response({"message": "Order put on hold successfully"})
+        serializer = PrimaryOrderSerializer(primary_order)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+        
+    # ── Statistics Endpoint ────────────────────────────────────────────────────
+    
+    @action(detail=False, methods=['get'], url_path='stats/summary')
+    def stats_summary(self, request):
+        """
+        Get summary statistics about LOBBY and HOLD orders.
+        
+        Returns:
+        {
+            "total_pending": 15,
+            "lobby_count": 10,
+            "hold_count": 5,
+            "oldest_pending_created_at": "2026-01-15T10:00:00Z",
+            "by_package": {
+                "1": 5,
+                "2": 10
+            },
+            "by_service": {
+                "cleaning": 3,
+                "maintenance": 7
+            }
+        }
+        """
+        queryset = self.get_queryset()
+        
+        from django.db.models import Count, Min
+        
+        stats = {
+            "total_pending": queryset.count(),
+            "lobby_count": queryset.filter(status=BookingStatus.LOBBY).count(),
+            "hold_count": queryset.filter(status=BookingStatus.HOLD).count(),
+            "oldest_pending_created_at": queryset.aggregate(Min('created_at'))['created_at__min'],
+        }
+        
+        # By package
+        by_package = dict(
+            queryset.values('package__id')
+            .annotate(count=Count('id'))
+            .values_list('package__id', 'count')
+        )
+        stats["by_package"] = by_package
+        
+        # By service
+        by_service = dict(
+            queryset.filter(service__isnull=False)
+            .values('service__name')
+            .annotate(count=Count('id'))
+            .values_list('service__name', 'count')
+        )
+        stats["by_service"] = by_service
+        
+        return Response(stats, status=status.HTTP_200_OK)
     
     # ── Helper Methods ────────────────────────────────────────────────────────
-    
-    def _parse_dates(self, period, raw_dates):
-        """Parse and validate dates for secondary order generation."""
-        from datetime import datetime
-        parsed = []
-        for date_str in raw_dates:
-            try:
-                parsed.append(datetime.fromisoformat(date_str).date())
-            except ValueError:
-                raise ValidationError(f"Invalid date format: {date_str}")
-        return parsed
       
     def _notify_customer(self, order, action_type, details):
         """
         Send email notification to customer about order status change.
+        
+        Args:
+            order: PrimaryOrder instance
+            action_type: 'approved', 'rejected', 'held', 'unholded'
+            details: Reason or additional context for the action
         """
-
         if not order.user or not order.user.email:
             return
 
@@ -1372,29 +1430,30 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
 
         subject = subject_map.get(action_type, "Order Update")
 
-        # Email message
+        # Email message template
         message = f"""
-    Hi {customer_name},
+Hi {customer_name},
 
-    We would like to inform you about an update on your order.
+We would like to inform you about an update on your order.
 
-    Order ID: {order_id}
-    Status: {action_type.upper()}
+Order ID: {order_id}
+Status: {action_type.upper()}
 
-    Details:
-    {details}
+Details:
+{details}
 
-    """
+"""
 
         # Add custom messages per action
-        if action_type == "approved":
-            message += "Your booking has been successfully approved and scheduled.\n"
-        elif action_type == "rejected":
-            message += "Unfortunately, your order has been rejected.\n"
-        elif action_type == "held":
-            message += "Your order is currently on hold. Our team will review it shortly.\n"
-        elif action_type == "unholded":
-            message += "Your order has been resumed and is back in processing.\n"
+        action_messages = {
+            "approved": "Your booking has been successfully approved and scheduled.",
+            "rejected": "Unfortunately, your order has been rejected.",
+            "held": "Your order is currently on hold. Our team will review it shortly.",
+            "unholded": "Your order has been resumed and is back in processing.",
+        }
+        
+        if action_type in action_messages:
+            message += action_messages[action_type] + "\n"
 
         message += "\nIf you have any questions, please contact our support team.\n\n"
         message += "Thank you,\nYour Team"
@@ -1408,4 +1467,5 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
                 fail_silently=False,
             )
         except Exception as e:
-            print(f"Email sending failed: {str(e)}")
+            # Log error but don't fail the request
+            print(f"Email sending failed for order {order_id}: {str(e)}")

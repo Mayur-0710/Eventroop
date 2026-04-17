@@ -5,6 +5,9 @@ from venue_manager.serializers import (
     VenueDropdownSerializer,
     ServiceDropdownSerializer
 )
+
+from .utils import auto_update_status
+
 from rest_framework import viewsets, permissions, status,pagination
 from .serializers import *
 from .models import *
@@ -329,7 +332,14 @@ class OrderViewSet(viewsets.ModelViewSet):
     - Rescheduling orders (regenerates sub-orders)
     """
 
-    search_fields = ['patient__first_name', 'patient__last_name', 'booking_entity', 'status']
+    search_fields = [
+        'patient__first_name',
+        'patient__last_name',
+        'user__first_name',
+        'user__last_name',
+        'booking_entity',
+        'status'
+    ]
     filterset_fields = {
         'patient': ['exact'],
         'package': ['exact'],
@@ -350,7 +360,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         
         if user.is_customer:
             queryset = queryset.filter(Q(patient__registered_by=user)|Q(user=user))
-
+                
         now = timezone.now()
 
         if self.request.query_params.get('ongoing'):
@@ -365,7 +375,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         service_id = self.request.query_params.get('service_id')
         if service_id:
             queryset = queryset.filter(service=service_id)
-
+        
         return queryset
 
     # ── Serializer ─────────────────────────────────────────────────────────────
@@ -439,7 +449,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 primary_order.generate_secondary_from_random_dates(parsed)
             else:
                 primary_order.generate_secondary_full_range_dates()
-            from .utils import auto_update_status
             
             primary_order.status = auto_update_status(
                 primary_order.start_datetime,
@@ -924,7 +933,14 @@ class TotalInvoiceViewSet(viewsets.ModelViewSet):
     ).prefetch_related('payments')
 
     serializer_class = TotalInvoiceSerializer
-    search_fields = ['invoice_number', 'patient__first_name', 'patient__last_name', 'status']
+    search_fields = [
+        'invoice_number',
+        'patient__first_name',
+        'patient__last_name',
+        'user__first_name',
+        'user__last_name',
+        'status'
+    ]
     filterset_fields = {
         'patient': ['exact'],
         'period_start': ['gte'],
@@ -1217,7 +1233,7 @@ class LobbyOrderViewSet(viewsets.ModelViewSet):
         user = self.request.user
         queryset = PrimaryOrder.objects.select_related(
             'patient', 'venue', 'service', 'package', 'user'
-        ).prefetch_related('secondary_orders__ternary_orders').filter(status=BookingStatus.LOBBY)
+        ).prefetch_related('secondary_orders__ternary_orders').filter(status__in=(BookingStatus.LOBBY,BookingStatus.HOLD))
         
         if user.is_customer:
             queryset = queryset.filter(Q(patient__registered_by=user)|Q(user=user))

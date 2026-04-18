@@ -18,7 +18,7 @@ urlpatterns = [
     path('booking/', include(('booking.urls', 'booking'), namespace='booking')),
     path('attendance/', include(('attendance.urls', 'attendance'), namespace='attendance')),
     path('payroll/', include(('payroll.urls', 'payroll'), namespace='payroll')),
-    path('notification/', include(('notification.urls', 'notification'), namespace='notification')),
+    path('notifications/', include(('notification.urls', 'notifications'), namespace='notifications')),
     path('analysis/', include(('analysis.urls', 'analysis'), namespace='analysis')),
     path('wallet/', include(('wallet.urls', 'wallet'), namespace='wallet')),
 ]

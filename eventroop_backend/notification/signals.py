@@ -21,7 +21,7 @@ Then uncomment and adapt the examples below for your own models.
 #         sender     = instance.user,
 #         title      = "New Like ❤️",
 #         message    = f"{instance.user.username} liked your post.",
-#         notif_type = 'like',
+#         notify_type = 'like',
 #         data       = {'post_id': instance.post.id},
 #         send_push  = True,
 #     )
@@ -36,7 +36,7 @@ Then uncomment and adapt the examples below for your own models.
 #         sender     = instance.user,
 #         title      = "New Comment 💬",
 #         message    = f"{instance.user.username}: \"{instance.body[:80]}\"",
-#         notif_type = 'comment',
+#         notify_type = 'comment',
 #         data       = {'post_id': instance.post.id, 'comment_id': instance.id},
 #         send_email = True,
 #         send_push  = True,
@@ -47,5 +47,5 @@ Then uncomment and adapt the examples below for your own models.
 #     recipient  = admin_user,
 #     title      = "⚠️ High CPU Alert",
 #     message    = "Server CPU exceeded 90% for 5 minutes.",
-#     notif_type = 'alert',
+#     notify_type = 'alert',
 # )

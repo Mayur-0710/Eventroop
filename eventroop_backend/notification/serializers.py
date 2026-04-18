@@ -1,42 +1,108 @@
 from rest_framework import serializers
-from .models import Notification
-from venue_manager.serializers import UserMiniSerializer
+from .models import Notification, NotificationTemplate
 
-class NotificationSerializer(serializers.ModelSerializer):
-    sender     = UserMiniSerializer(read_only=True)
-    time_ago   = serializers.SerializerMethodField()
+
+# -------------------------------------------------------------------
+#                   NOTIFICATION TEMPLATE SERIALIZERS
+# -------------------------------------------------------------------
+class NotificationTemplateSerializer(serializers.ModelSerializer):
+    channel_display = serializers.CharField(source='get_channel_display', read_only=True)
+    category_display = serializers.CharField(source='get_category_display', read_only=True)
 
     class Meta:
-        model  = Notification
+        model = NotificationTemplate
         fields = [
-            'id', 'notif_type', 'title', 'message',
-            'is_read', 'sender', 'data', 'created_at', 'time_ago',
+            'id', 'owner', 'name', 'channel', 'channel_display',
+            'category', 'category_display', 'subject', 'body',
+            'is_active', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'created_at']
-
-    def get_time_ago(self, obj):
-        from django.utils import timezone
-        from datetime import timedelta
-
-        now   = timezone.now()
-        delta = now - obj.created_at
-
-        if delta < timedelta(minutes=1):
-            return "just now"
-        elif delta < timedelta(hours=1):
-            m = int(delta.total_seconds() / 60)
-            return f"{m}m ago"
-        elif delta < timedelta(days=1):
-            h = int(delta.total_seconds() / 3600)
-            return f"{h}h ago"
-        elif delta < timedelta(days=7):
-            d = delta.days
-            return f"{d}d ago"
-        else:
-            return obj.created_at.strftime("%b %d")
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 
-class NotificationUpdateSerializer(serializers.Serializer):
+# -------------------------------------------------------------------
+#                     NOTIFICATION SERIALIZERS
+# -------------------------------------------------------------------
+class NotificationSerializer(serializers.ModelSerializer):
+    channel_display = serializers.CharField(source='get_channel_display', read_only=True)
+    category_display = serializers.CharField(source='get_category_display', read_only=True)
+    priority_display = serializers.CharField(source='get_priority_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    is_read = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = [
+            'id',
+            'owner', 'recipient', 'template',
+            'channel', 'channel_display',
+            'category', 'category_display',
+            'priority', 'priority_display',
+            'status', 'status_display',
+            'title', 'message', 'extra_data',
+            'recipient_email', 'recipient_phone',
+            'content_type', 'object_id',
+            'scheduled_at',
+            'sent_at', 'delivered_at', 'read_at',
+            'failure_reason', 'retry_count',
+            'is_read',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'sent_at', 'delivered_at', 'read_at',
+            'failure_reason', 'retry_count', 'created_at', 'updated_at',
+        ]
+
+
+class NotificationCreateSerializer(serializers.ModelSerializer):
+    """Slim serializer for creating notifications programmatically."""
+
+    class Meta:
+        model = Notification
+        fields = [
+            'owner', 'recipient', 'template',
+            'channel', 'category', 'priority',
+            'title', 'message', 'extra_data',
+            'recipient_email', 'recipient_phone',
+            'content_type', 'object_id',
+            'scheduled_at',
+        ]
+
+    def validate(self, attrs):
+        channel = attrs.get('channel')
+        recipient_email = attrs.get('recipient_email', '')
+        recipient_phone = attrs.get('recipient_phone', '')
+
+        if channel == Notification.Channel.EMAIL and not recipient_email:
+            raise serializers.ValidationError(
+                {"recipient_email": "recipient_email is required for Email notifications."}
+            )
+        if channel in (Notification.Channel.SMS, Notification.Channel.WHATSAPP) and not recipient_phone:
+            raise serializers.ValidationError(
+                {"recipient_phone": "recipient_phone is required for SMS/WhatsApp notifications."}
+            )
+        return attrs
+
+
+class MarkReadSerializer(serializers.Serializer):
+    """Used to bulk-mark notifications as read."""
     ids = serializers.ListField(
-        child=serializers.IntegerField(), required=False, allow_empty=True
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+        help_text="List of Notification IDs to mark as read."
     )
+
+class NotificationSubscriberSerializer(serializers.Serializer):
+    recipient_id = serializers.IntegerField()
+    template_name = serializers.CharField(required=False)
+    channel = serializers.CharField()
+    category = serializers.CharField()
+    title = serializers.CharField(required=False)
+    message = serializers.CharField(required=False)
+    extra_data = serializers.JSONField(required=False)
+
+    def validate(self, data):
+        if not data.get('template_name') and not data.get('message'):
+            raise serializers.ValidationError(
+                "Either template_name or message is required"
+            )
+        return data

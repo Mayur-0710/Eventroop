@@ -1,164 +1,188 @@
-from rest_framework import generics, status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework import viewsets, generics, status, filters
+from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.shortcuts import get_object_or_404
-from .models import Notification
-from .serializers import NotificationSerializer, NotificationUpdateSerializer
+from rest_framework.permissions import IsAuthenticated
+from django_filters.rest_framework import DjangoFilterBackend
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from rest_framework.views import APIView
+from rest_framework import status
+from .models import Notification, NotificationTemplate
+from accounts.models import CustomUser
+ 
+from .serializers import (
+    NotificationSerializer,
+    NotificationCreateSerializer,
+    NotificationTemplateSerializer,
+    MarkReadSerializer,
+    NotificationSubscriberSerializer
+)
 
 
-class NotificationListView(generics.ListAPIView):
-    """
-    GET /api/notifications/
-    Query params:
-      ?unread=true   → only unread
-      ?type=like     → filter by type
-      ?page=1        → pagination (default page size 20)
-    """
-    serializer_class   = NotificationSerializer
+
+# --------------NOTIFICATION TEMPLATE VIEWSET------------------------
+class NotificationTemplateViewSet(viewsets.ModelViewSet):
+    """CRUD for notification templates. Owners see only their own templates."""
+    serializer_class = NotificationTemplateSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['channel', 'category', 'is_active']
+    search_fields = ['name', 'subject', 'body']
+    ordering_fields = ['name', 'created_at']
+    ordering = ['-created_at']
 
     def get_queryset(self):
-        qs = Notification.objects.filter(recipient=self.request.user).select_related('sender')
+        user = self.request.user
+        return NotificationTemplate.objects.filter(owner=user)
 
-        unread = self.request.query_params.get('unread')
-        if unread and unread.lower() == 'true':
-            qs = qs.filter(is_read=False)
+    def perform_create(self, serializer):
+        serializer.save(owner=self.request.user)
 
-        notif_type = self.request.query_params.get('type')
-        if notif_type:
-            qs = qs.filter(notif_type=notif_type)
-
-        return qs
-
-    def list(self, request, *args, **kwargs):
-        queryset     = self.get_queryset()
-        unread_count = queryset.filter(is_read=False).count() if not request.query_params.get('unread') else queryset.count()
-        page         = self.paginate_queryset(queryset)
-
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            response   = self.get_paginated_response(serializer.data)
-            response.data['unread_count'] = Notification.objects.filter(
-                recipient=request.user, is_read=False
-            ).count()
-            return response
-
-        serializer = self.get_serializer(queryset, many=True)
-        return Response({
-            'results':      serializer.data,
-            'unread_count': Notification.objects.filter(recipient=request.user, is_read=False).count(),
-        })
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def unread_count(request):
-    """GET /api/notifications/unread-count/"""
-    count = Notification.objects.filter(recipient=request.user, is_read=False).count()
-    return Response({'unread_count': count})
-
-
-@api_view(['PATCH'])
-@permission_classes([IsAuthenticated])
-def mark_read(request, pk):
-    """PATCH /api/notifications/<pk>/read/"""
-    notif = get_object_or_404(Notification, pk=pk, recipient=request.user)
-    notif.is_read = True
-    notif.save(update_fields=['is_read'])
-    return Response(NotificationSerializer(notif).data)
-
-
-@api_view(['PATCH'])
-@permission_classes([IsAuthenticated])
-def mark_all_read(request):
+# ------------------NOTIFICATION VIEWSET-----------------------------
+class NotificationViewSet(viewsets.ModelViewSet):
     """
-    PATCH /api/notifications/mark-all-read/
-    Body (optional): { "ids": [1, 2, 3] }  → marks specific ones
-    No body → marks ALL unread
+    Full CRUD for notifications.
+
+    Extra actions:
+      POST /notifications/{id}/mark_read/   — mark a single notification as read
+      POST /notifications/mark_read_bulk/   — mark multiple notifications as read
+      GET  /notifications/unread_count/     — count of unread notifications for the user
     """
-    serializer = NotificationUpdateSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    ids = serializer.validated_data.get('ids')
+    
+    filterset_fields = ['channel', 'category', 'priority', 'status']
+    search_fields = ['title', 'message']
+    ordering_fields = ['created_at', 'priority', 'status']
+    ordering = ['-created_at']
 
-    qs = Notification.objects.filter(recipient=request.user, is_read=False)
-    if ids:
-        qs = qs.filter(id__in=ids)
-
-    updated = qs.update(is_read=True)
-    return Response({'marked_read': updated})
-
-
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
-def delete_notification(request, pk):
-    """DELETE /api/notifications/<pk>/"""
-    notif = get_object_or_404(Notification, pk=pk, recipient=request.user)
-    notif.delete()
-    return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
-def clear_all(request):
-    """DELETE /api/notifications/clear/"""
-    deleted, _ = Notification.objects.filter(recipient=request.user).delete()
-    return Response({'deleted': deleted})
-
-
-# ─── Internal helper used by signals / services ──────────────────────────────
-
-def create_notification(recipient, title, message, notif_type='system',
-                        sender=None, data=None, send_email=False, send_push=False):
-    """
-    Call this from signals, views, or Celery tasks to create + dispatch a notification.
-
-    Example:
-        from notifications.views import create_notification
-        create_notification(
-            recipient  = user,
-            title      = "New Like ❤️",
-            message    = "Alice liked your post.",
-            notif_type = 'like',
-            sender     = alice,
-            send_email = True,
+    def get_queryset(self):
+        if self.request.user.is_owner:
+            return Notification.objects.select_related(
+                'owner', 'recipient', 'template'
+            )
+        return Notification.objects.filter(recipient=self.request.user).select_related(
+            'owner', 'recipient', 'template'
         )
-    """
-    notif = Notification.objects.create(
-        recipient=recipient,
-        sender=sender,
-        notif_type=notif_type,
-        title=title,
-        message=message,
-        data=data or {},
-    )
 
-    # Real-time WebSocket push
-    _ws_push(notif)
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return NotificationCreateSerializer
+        return NotificationSerializer
 
-    # Async email
-    if send_email and recipient.email:
-        from .tasks import send_email_task
-        send_email_task.delay(recipient.email, title, message)
+    def perform_create(self, serializer):
+        serializer.save()
 
-    # Async push notification
-    if send_push:
-        from .tasks import send_push_task
-        send_push_task.delay(recipient.id, title, message)
+    @action(detail=True, methods=['post'], url_path='mark_read')
+    def mark_read(self, request, pk=None):
+        notification = self.get_object()
+        notification.mark_read()
+        return Response(
+            {'detail': 'Notification marked as read.'},
+            status=status.HTTP_200_OK
+        )
 
-    return notif
+    @action(detail=False, methods=['post'], url_path='mark_read_bulk')
+    def mark_read_bulk(self, request):
+        serializer = MarkReadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ids = serializer.validated_data['ids']
+        updated = (
+            Notification.objects
+            .filter(id__in=ids, recipient=request.user)
+            .exclude(status=Notification.Status.READ)
+        )
+        from django.utils import timezone
+        count = updated.update(status=Notification.Status.READ, read_at=timezone.now())
+        return Response(
+            {'detail': f'{count} notification(s) marked as read.'},
+            status=status.HTTP_200_OK
+        )
 
+    @action(detail=False, methods=['get'], url_path='unread_count')
+    def unread_count(self, request):
+        count = Notification.objects.filter(
+            recipient=request.user
+        ).exclude(status=Notification.Status.READ).count()
+        return Response({'unread_count': count}, status=status.HTTP_200_OK)
+    
 
-def _ws_push(notif):
-    try:
-        from asgiref.sync import async_to_sync
-        from channels.layers import get_channel_layer
+    def push_notification(notification):
         channel_layer = get_channel_layer()
+
+        group_name = f"user_{notification.recipient_id}"
+
         async_to_sync(channel_layer.group_send)(
-            f'notifications_{notif.recipient.id}',
+            group_name,
             {
-                'type': 'send_notification',
-                'data': NotificationSerializer(notif).data,
+                "type": "send_notification",
+                "data": {
+                    "id": notification.id,
+                    "title": notification.title,
+                    "message": notification.message,
+                    "channel": notification.channel,
+                    "category": notification.category,
+                    "status": notification.status,
+                    "created_at": str(notification.created_at),
+                }
             }
         )
-    except Exception:
-        pass  # Channels not configured — silently skip
+
+# ------------------NOTIFICATION SUBCRIPTION VIEWSET-----------------------------
+class NotificationSubscriberView(APIView):
+    """
+    Receives events from n8n and creates Notification records.
+    """
+    
+
+    def post(self, request):
+        serializer = NotificationSubscriberSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            recipient = CustomUser.objects.get(id=data['recipient_id'])
+        except CustomUser.DoesNotExist:
+            return Response({"error": "Recipient not found"}, status=404)
+
+        template = None
+        message = data.get("message", "")
+        title = data.get("title", "")
+
+        # ---- Template Handling ----
+        if data.get("template_name"):
+            template = NotificationTemplate.objects.filter(
+                name=data["template_name"],
+                channel=data["channel"],
+                is_active=True
+            ).first()
+
+            if template:
+                message = self.render_template(template.body, data.get("extra_data", {}))
+                title = template.subject or title
+
+        # ---- Create Notification ----
+        notification = Notification.objects.create(
+            recipient=recipient,
+            template=template,
+            channel=data["channel"],
+            category=data["category"],
+            title=title,
+            message=message,
+            extra_data=data.get("extra_data", {}),
+            recipient_email=recipient.email,
+            recipient_phone=getattr(recipient, "phone", ""),
+            status=Notification.Status.PENDING
+        )
+
+        return Response({
+            "message": "Notification created",
+            "id": notification.id
+        }, status=status.HTTP_201_CREATED)
+
+    def render_template(self, body, context):
+        """
+        Simple template renderer: replaces {{ key }}
+        """
+        for key, value in context.items():
+            body = body.replace(f"{{{{ {key} }}}}", str(value))
+        return body
+   

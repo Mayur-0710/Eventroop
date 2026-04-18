@@ -1,51 +1,38 @@
 # notifications/services.py
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
-from django.core.mail import send_mail
-from .models import Notification
-from .tasks import send_email_task, send_push_task
 
-channel_layer = get_channel_layer()
+from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
+from .models import Notification, NotificationTemplate
 
-def notify(recipient, title, message, notif_type='system', sender=None, data=None, send_email=False, send_push=False):
-    """
-    Central function to create and dispatch all notification types.
-    Usage: notify(user, "New Like", "Alice liked your post", notif_type='like', send_email=True)
-    """
-    notif = Notification.objects.create(
-        recipient=recipient,
-        sender=sender,
-        notif_type=notif_type,
-        title=title,
-        message=message,
-        data=data or {},
-    )
+def create_missed_attendance_notification(user, date):
+    template = NotificationTemplate.objects.filter(
+        name="missed_attendance",
+        channel=Notification.Channel.ALERT,
+        is_active=True
+    ).first()
 
-    # 1. Real-time via WebSocket
-    _push_to_websocket(notif)
+    message = f"You missed marking attendance for {date}"
 
-    # 2. Email (async via Celery)
-    if send_email and recipient.email:
-        send_email_task.delay(recipient.email, title, message)
+    if template:
+        message = template.body.replace("{{ date }}", str(date))
 
-    # 3. Push notification (async via Celery)
-    if send_push:
-        send_push_task.delay(recipient.id, title, message)
+    exists = Notification.objects.filter(
+        recipient=user,
+        title="Attendance Missed",
+        created_at__date=timezone.now().date()
+    ).exists()
 
-    return notif
-
-
-def _push_to_websocket(notif):
-    group_name = f'notifications_{notif.recipient.id}'
-    async_to_sync(channel_layer.group_send)(group_name, {
-        'type': 'send_notification',
-        'data': {
-            'type':       'new_notification',
-            'id':         notif.id,
-            'notif_type': notif.notif_type,
-            'title':      notif.title,
-            'message':    notif.message,
-            'data':       notif.data,
-            'created_at': notif.created_at.isoformat(),
-        }
-    })
+    if not exists:
+        Notification.objects.create(
+            owner=user.hierarchy.owner if hasattr(user, "hierarchy") else None,
+            recipient=user,
+            template=template,
+            channel=Notification.Channel.ALERT,
+            category=Notification.Category.ALERT,
+            priority=Notification.Priority.HIGH,
+            title="Attendance Missed",
+            message=message,
+            recipient_email=user.email or "",
+            content_type=ContentType.objects.get_for_model(user),
+            object_id=user.id,
+        )

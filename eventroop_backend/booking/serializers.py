@@ -472,11 +472,6 @@ class PrimaryOrderCreateSerializer(serializers.ModelSerializer):
 
         return data
 
-    def create(self, validated_data):
-        # Strip write-only 'dates' — handled separately in the ViewSet
-        validated_data.pop('dates', None)
-        
-        return PrimaryOrder.objects.create(**validated_data)
 
 class PaymentSerializer(serializers.ModelSerializer):
     """Serializer for Payment model"""

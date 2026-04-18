@@ -395,9 +395,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.validated_data['user'] = request.user
+        raw_dates = serializer.validated_data.get('raw_dates', [])
         
-        raw_dates = serializer.validated_data['raw_dates']
-
         # Handle dates → set start & end
         if raw_dates:
             try:
